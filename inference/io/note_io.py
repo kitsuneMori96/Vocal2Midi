@@ -14,6 +14,7 @@ class NoteInfo:
     offset: float
     pitch: float
     lyric: str = ""
+    velocity: int = 100
 
 
 def _finite_notes(notes: list[NoteInfo]) -> list[NoteInfo]:
@@ -37,6 +38,16 @@ def _clamp_midi_pitch(pitch: float) -> int:
     if not np.isfinite(pitch):
         raise ValueError("pitch must be finite")
     return int(np.clip(round(pitch), 0, 127))
+
+
+def _clamp_velocity(velocity) -> int:
+    try:
+        f = float(velocity)
+    except (TypeError, ValueError):
+        return 100
+    if not np.isfinite(f):
+        return 100
+    return int(np.clip(int(round(f)), 1, 127))
 
 
 def pad_1d_arrays(arrays: list[np.ndarray], pad_value=0.0) -> np.ndarray:
@@ -80,14 +91,15 @@ def _save_midi(notes: list[NoteInfo], filepath: pathlib.Path, tempo: int = 120):
     last_abs_ticks = 0
     for abs_ticks, _order, midi_pitch, kind, note in events:
         delta = abs_ticks - last_abs_ticks
+        velocity = _clamp_velocity(getattr(note, "velocity", 100))
         if kind == "on":
             if getattr(note, "lyric", ""):
                 track.append(mido.MetaMessage('lyrics', text=note.lyric, time=delta))
-                track.append(mido.Message("note_on", note=midi_pitch, velocity=100, time=0))
+                track.append(mido.Message("note_on", note=midi_pitch, velocity=velocity, time=0))
             else:
-                track.append(mido.Message("note_on", note=midi_pitch, velocity=100, time=delta))
+                track.append(mido.Message("note_on", note=midi_pitch, velocity=velocity, time=delta))
         else:
-            track.append(mido.Message("note_off", note=midi_pitch, velocity=100, time=delta))
+            track.append(mido.Message("note_off", note=midi_pitch, velocity=velocity, time=delta))
         last_abs_ticks = abs_ticks
 
     filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -120,24 +132,26 @@ def _save_text(
 
     filepath.parent.mkdir(parents=True, exist_ok=True)
     lyric_list = [getattr(note, "lyric", "") for note in notes]
+    velocity_list = [str(_clamp_velocity(getattr(note, "velocity", 100))) for note in notes]
     has_lyrics = any(lyric_list)
 
     if file_format == "txt":
         with filepath.open(encoding="utf8", mode="w") as f:
-            for onset, offset, pitch, lyric in zip(onset_list, offset_list, pitch_list, lyric_list):
+            for onset, offset, pitch, lyric, velocity in zip(onset_list, offset_list, pitch_list, lyric_list, velocity_list):
                 if has_lyrics:
-                    f.write(f"{onset}\t{offset}\t{pitch}\t{lyric}\n")
+                    f.write(f"{onset}\t{offset}\t{pitch}\t{lyric}\t{velocity}\n")
                 else:
-                    f.write(f"{onset}\t{offset}\t{pitch}\n")
+                    f.write(f"{onset}\t{offset}\t{pitch}\t{velocity}\n")
     elif file_format == "csv":
         with filepath.open(encoding="utf8", mode="w", newline="") as f:
             fieldnames = ["onset", "offset", "pitch"]
             if has_lyrics:
                 fieldnames.append("lyric")
+            fieldnames.append("velocity")
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            for onset, offset, pitch, lyric in zip(onset_list, offset_list, pitch_list, lyric_list):
-                row = {"onset": onset, "offset": offset, "pitch": pitch}
+            for onset, offset, pitch, lyric, velocity in zip(onset_list, offset_list, pitch_list, lyric_list, velocity_list):
+                row = {"onset": onset, "offset": offset, "pitch": pitch, "velocity": velocity}
                 if has_lyrics:
                     row["lyric"] = lyric
                 writer.writerow(row)
