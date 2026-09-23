@@ -258,6 +258,7 @@ def auto_lyric_hybrid_pipeline(
     slice_max_sec: float = DEFAULT_SLICE_MAX_SEC,
     output_lyrics: bool = True,
     output_pitch_curve: bool = False,
+    output_velocity_curve: bool = False,
     rmvpe_model_path: str = "",
     phoneme_asr_model_path: str = "",
     pinyin_asr_model_path: str = "",
@@ -519,6 +520,33 @@ def auto_lyric_hybrid_pipeline(
             free_memory()
 
     all_notes.sort(key=lambda x: x.onset)
+
+    # Velocity (dynamics) curve: decoupled from RMVPE (pure waveform+RMS,
+    # so `mid` can use it too). Runs after note extraction, before
+    # quantization; failures fall back to velocity=100 without breaking export.
+    dyn_result = None
+    if output_velocity_curve and all_notes:
+        try:
+            from inference.API.velocity_api import extract_velocity
+            from inference.API.ustx_api import _build_dyn_curve
+
+            vel_res = extract_velocity(
+                waveform,
+                sr,
+                all_notes,
+                pred_dict if run_lyric_alignment else None,
+                chunks,
+                language=fa_language,
+            )
+            for note, vel in zip(all_notes, vel_res.note_velocities):
+                note.velocity = int(vel)
+            if "ustx" in output_format_set and vel_res.dyn_xs:
+                dyn_xs, dyn_ys = _build_dyn_curve(all_notes, vel_res.dyn_xs, vel_res.dyn_ys, float(tempo))
+                if dyn_xs:
+                    dyn_result = (dyn_xs, dyn_ys)
+            print(f"[Hybrid Pipeline] Velocity done. notes={len(vel_res.note_velocities)} dyn_points={len(dyn_result[0]) if dyn_result else 0}")
+        except Exception as e:
+            print(f"[Warning] Velocity curve failed ({e}); falling back to default velocity=100.")
     
                                                      
     export_asr_match_log = output_lyrics and (("asr_match_log" in output_format_set) or ("chunks" in output_format_set))
@@ -539,7 +567,7 @@ def auto_lyric_hybrid_pipeline(
     if "csv" in output_format_set:
         _save_text(all_notes, output_dir / f"{output_key}.csv", "csv", pitch_format, round_pitch)
     if "ustx" in output_format_set:
-        save_ustx(all_notes, output_dir / f"{output_key}.ustx", tempo=float(tempo), rmvpe_result=rmvpe_result)
+        save_ustx(all_notes, output_dir / f"{output_key}.ustx", tempo=float(tempo), rmvpe_result=rmvpe_result, dyn_result=dyn_result)
     if "vsqx" in output_format_set:
         save_vsqx(all_notes, output_dir / f"{output_key}.vsqx", tempo=float(tempo), language=fa_language, rmvpe_result=rmvpe_result)
 
