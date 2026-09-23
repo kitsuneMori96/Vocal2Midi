@@ -147,6 +147,98 @@ def _build_pitd_curve(notes: list[Any], rmvpe: RmvpeResult, tempo: float) -> tup
     return xs, ys
 
 
+def _build_dyn_curve(
+    notes: list[Any],
+    dyn_xs: list[float],
+    dyn_ys: list[int],
+    tempo: float,
+) -> tuple[list[int], list[int]]:
+    """Build the USTX dyn (dynamics) curve from frame-level dyn data.
+
+    Independent pipeline from pitd (PCHIP + savgol, NOT _append_smoothed_points:
+    median/adaptive are no-ops on staircases and squash slopes on curves).
+
+    - dyn_xs: seconds (frame-level, from velocity_api.extract_velocity)
+    - dyn_ys: dyn domain ints, already clipped to [-240, 120]
+    - x uses the same 5-tick quantization as pitd (shared coordinate system)
+    - edge_trim=min(0.025, dur*0.15) applies to the TAIL only (attack kept)
+    - per-note independent PCHIP (boundary jumps preserved by construction),
+      evaluated on the uniform 5-tick grid spanning each note's knots;
+      savgol(window=5, polyorder=2) removes single-point jitter only.
+    """
+    if not notes or not dyn_xs or not dyn_ys or len(dyn_xs) != len(dyn_ys):
+        return [], []
+    try:
+        from scipy.interpolate import PchipInterpolator
+        from scipy.signal import savgol_filter
+    except ImportError:
+        return [], []
+
+    notes = sorted(notes, key=lambda n: n.onset)
+    frame_t = np.asarray(dyn_xs, dtype=np.float64)
+    frame_v = np.asarray(dyn_ys, dtype=np.float64)
+
+    xs: list[int] = []
+    ys: list[int] = []
+    for note in notes:
+        onset = float(note.onset)
+        offset = float(note.offset)
+        dur = max(0.0, offset - onset)
+        if dur <= 0:
+            continue
+        edge_trim = min(0.025, dur * 0.15)
+        # Tail-only trim: keep the attack, drop release/reverb tail.
+        sel = (frame_t >= onset) & (frame_t < offset - edge_trim if dur > edge_trim else offset)
+        if not bool(sel.any()):
+            continue
+        seg_t = frame_t[sel]
+        seg_v = np.clip(frame_v[sel], -240, 120)
+
+        # Layer 1: quantize to the 5-tick grid, median-collapse shared ticks.
+        buckets: dict[int, list[float]] = {}
+        for t, v in zip(seg_t.tolist(), seg_v.tolist()):
+            x = int(round(_to_ticks(float(t), tempo) / UCurveInterval) * UCurveInterval)
+            buckets.setdefault(x, []).append(float(v))
+        knot_x = sorted(buckets)
+        knot_y = [float(np.median(buckets[x])) for x in knot_x]
+        if not knot_x:
+            continue
+
+        # Layer 2: per-note PCHIP (shape-preserving, no overshoot),
+        # evaluated on the uniform 5-tick grid spanning the knots.
+        if len(knot_x) >= 2:
+            try:
+                interp = PchipInterpolator(np.asarray(knot_x, dtype=np.float64), np.asarray(knot_y, dtype=np.float64))
+            except Exception:
+                interp = None
+            grid = list(range(knot_x[0], knot_x[-1] + 1, UCurveInterval))
+            if interp is not None:
+                grid_y = [float(v) for v in np.asarray(interp(np.asarray(grid, dtype=np.float64))).tolist()]
+            else:
+                grid_y = list(knot_y[: len(grid)])
+        else:
+            grid = list(knot_x)
+            grid_y = list(knot_y)
+
+        # Layer 3: light savgol (single-point jitter only, slope preserved).
+        arr = np.asarray(grid_y, dtype=np.float64)
+        if arr.size >= 5:
+            try:
+                arr = np.asarray(savgol_filter(arr, window_length=5, polyorder=2, mode="interp"), dtype=np.float64)
+            except Exception:
+                pass
+        arr = np.clip(np.round(arr), -240, 120).astype(np.int32)
+
+        for x, y in zip(grid, arr.tolist()):
+            x, y = int(x), int(y)
+            if xs and xs[-1] == x:
+                ys[-1] = y
+            else:
+                xs.append(x)
+                ys.append(y)
+    return xs, ys
+
+
 def _default_expressions() -> dict:
     return {
         "dyn": {
@@ -372,7 +464,7 @@ def _default_expressions() -> dict:
     }
 
 
-def save_ustx(notes: list[Any], filepath: Path, tempo: float, rmvpe_result: RmvpeResult | None = None):
+def save_ustx(notes: list[Any], filepath: Path, tempo: float, rmvpe_result: RmvpeResult | None = None, dyn_result: tuple[list[int], list[int]] | None = None):
     notes = sorted(_finite_notes(notes), key=lambda n: n.onset)
     ustx_notes = []
     max_end_tick = 0
@@ -415,6 +507,10 @@ def save_ustx(notes: list[Any], filepath: Path, tempo: float, rmvpe_result: Rmvp
         xs, ys = _build_pitd_curve(notes, rmvpe_result, tempo)
         if xs:
             curves.append({"abbr": "pitd", "xs": xs, "ys": ys})
+    if dyn_result is not None:
+        dyn_xs, dyn_ys = dyn_result
+        if dyn_xs:
+            curves.append({"abbr": "dyn", "xs": list(dyn_xs), "ys": list(dyn_ys)})
 
     project = {
         "name": filepath.stem,
