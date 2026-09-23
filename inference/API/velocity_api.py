@@ -386,3 +386,57 @@ def note_velocities(
             continue
         out.append(int(np.clip(round(float(np.median(sel))), 1, 127)))
     return out
+
+
+# ── 回改1: full-chain entry ──────────────────────────────────────────
+
+@dataclass
+class VelocityResult:
+    """Full-chain output: MIDI per-note velocities + frame-level dyn data."""
+
+    note_velocities: list[int]  # [N] 1..127, from savgol-smoothed frames
+    dyn_xs: list[float]  # [T] seconds (frame_times); ustx_api quantizes to ticks
+    dyn_ys: list[int]  # [T] dyn domain -240..120, mapped from RAW states
+    frame_times: np.ndarray  # [T] seconds
+    states: np.ndarray  # [T] int 0..5
+
+
+def extract_velocity(
+    waveform: np.ndarray,
+    sr: int,
+    notes: list,
+    pred_dict: dict | None = None,
+    chunks: list | None = None,
+    language: str | None = "zh",
+    frame_length: int = FRAME_LENGTH,
+    hop_length: int = HOP_LENGTH,
+) -> VelocityResult:
+    """Run RMS -> emission -> viterbi -> dual outputs.
+
+    dyn_ys comes from RAW state-mapped velocities (no savgol): the dyn
+    pipeline (PCHIP+savgol in ustx_api) is the sole smoother for that
+    path. note_velocities uses the savgol-smoothed frames. Empty input
+    -> empty lists (fail soft, pipeline falls back to velocity=100).
+    """
+    obs = extract_rms_obs(waveform, sr, frame_length=frame_length, hop_length=hop_length)
+    if obs.norm_obs.size == 0:
+        return VelocityResult(
+            note_velocities=[100] * len(notes or []),
+            dyn_xs=[],
+            dyn_ys=[],
+            frame_times=obs.frame_times,
+            states=np.zeros((0,), dtype=np.int32),
+        )
+    voiced = build_voiced_mask(obs.frame_times, pred_dict, chunks, language)
+    prob = build_emission_probs(obs.norm_obs, voiced)
+    bounds = note_boundary_frames(notes or [], obs.frame_times)
+    states = decode_states(prob, None, bounds)
+    frame_vel_raw = states_to_frame_velocity(states)
+    frame_vel_sm = smooth_velocity_curve(frame_vel_raw)
+    return VelocityResult(
+        note_velocities=note_velocities(notes or [], obs.frame_times, frame_vel_sm),
+        dyn_xs=[float(t) for t in obs.frame_times.tolist()],
+        dyn_ys=[int(v) for v in np.asarray(velocity_to_dyn(frame_vel_raw)).reshape(-1).tolist()],
+        frame_times=obs.frame_times,
+        states=states,
+    )
