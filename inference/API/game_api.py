@@ -75,6 +75,59 @@ def _find_word_nucleus_start(word, language: str | None) -> float | None:
 _ROMAJI_VOWEL_TO_KANA = {"a": "ア", "i": "イ", "u": "ウ", "e": "エ", "o": "オ", "N": "ン"}
 
 
+# Romaji mora -> hiragana, borrowed from lfa_api (lazy import: JaG2p pulls
+# pyopenjtalk, which game_api must not require at module import time).
+_ROMAJI_MORA_KANA_CACHE: dict | None = None
+
+
+def _get_romaji_mora_kana() -> dict:
+    global _ROMAJI_MORA_KANA_CACHE
+    if _ROMAJI_MORA_KANA_CACHE is None:
+        try:
+            from inference.API.lfa_api import _ROMAJI_TO_KANA_MORA as mapping
+
+            _ROMAJI_MORA_KANA_CACHE = dict(mapping)
+        except Exception:
+            _ROMAJI_MORA_KANA_CACHE = {}
+    return _ROMAJI_MORA_KANA_CACHE
+
+
+def _word_matches_char(word_text: str, char: str, language: str | None) -> bool:
+    """Whether an HFA word plausibly produced a lyric char (anti-cascade).
+
+    Direct text equality covers hanzi/pinyin/kana-word text; for Japanese
+    mora words in romaji ("ka") the lfa mora map is consulted so "ka"
+    matches "か" (and vowel katakana "ア" via the tail-fill map).
+    """
+    wt, ch = str(word_text or ""), str(char or "")
+    if not wt or not ch:
+        return False
+    if ch == wt or ch.lower() == wt.lower():
+        return True
+    if (language or "").lower() == "ja":
+        kana = _get_romaji_mora_kana().get(wt.lower())
+        if kana is not None and (kana == ch or kana.lower() == ch.lower()):
+            return True
+        if _ROMAJI_VOWEL_TO_KANA.get(wt.lower()) == ch:
+            return True
+    return False
+
+
+def _looks_like_insertion(word, next_word, char: str, language: str | None) -> bool:
+    """One-step lookahead: current word matches nothing, next word matches.
+
+    An inserted HFA word (breath fragment, split mora) must not consume a
+    lyric slot, or every later lyric in the chunk shifts by one.
+    """
+    if next_word is None or next_word.text in _NON_SINGABLE_WORD_TOKENS:
+        return False
+    if _find_word_nucleus_start(next_word, language) is None:
+        return False
+    return not _word_matches_char(word.text, char, language) and _word_matches_char(
+        next_word.text, char, language
+    )
+
+
 def _word_nucleus_vowel(word, language: str | None, lyric_output_mode: str | None = None) -> str | None:
     """Nucleus vowel display text for melisma tail auto-fill, or None.
 
@@ -282,6 +335,24 @@ def extract_vowel_boundaries(
                 last_end = word.end
             continue
 
+        if (
+            char_idx < len(original_chars)
+            and _looks_like_insertion(
+                word,
+                result_word[i + 1] if i + 1 < len(result_word) else None,
+                original_chars[char_idx],
+                language,
+            )
+        ):
+            # Inserted fragment: emit an unvoiced gap without consuming the char.
+            if word.end > last_end:
+                word_durs.append(word.end - last_end)
+                word_vuvs.append(0)
+                lyrics.append("")
+                vowels.append(None)
+                last_end = word.end
+            continue
+
         if vowel_start > last_end + 0.005:
             word_durs.append(vowel_start - last_end)
             word_vuvs.append(0)
@@ -310,6 +381,22 @@ def extract_vowel_boundaries(
             # aligner while the caller still consumes a lyric slot, shifting
             # every later lyric in the chunk by one. Drop it instead.
             continue
+
+        if is_romaji:
+            # Bounded seek: skip-ahead over deleted chars is preserved, but an
+            # inserted word matching nothing ahead must not run char_idx off
+            # the end (old code then emitted raw HFA text for the whole tail).
+            seek = char_idx
+            while seek < len(original_chars) and original_chars[seek].lower() != word.text.lower():
+                seek += 1
+            if seek >= len(original_chars):
+                if word.end > last_end:
+                    word_durs.append(word.end - last_end)
+                    word_vuvs.append(0)
+                    lyrics.append("")
+                    vowels.append(None)
+                    last_end = word.end
+                continue
 
         word_durs.append(dur)
         word_vuvs.append(1)

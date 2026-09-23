@@ -215,3 +215,48 @@ def test_melisma_tail_note_keeps_dash_for_english():
     )
 
     assert [n.lyric for n in all_notes] == ["fly", "-"]
+
+
+def test_inserted_fragment_does_not_shift_later_kana_lyrics():
+    words = [
+        _make_word(0.0, 0.10, "i", [(0.0, 0.10, "i")]),
+        _make_word(0.10, 0.30, "a", [(0.10, 0.30, "a")]),
+        _make_word(0.30, 0.50, "ta", [(0.30, 0.40, "t"), (0.40, 0.50, "a")]),
+    ]
+
+    word_durs, word_vuvs, lyrics, vowels = extract_vowel_boundaries(
+        words, ["あ", "た"], language="ja", lyric_output_mode="kana"
+    )
+
+    assert lyrics == ["", "あ", "た"]
+    assert word_vuvs == [0, 1, 1]
+    assert vowels == [None, "ア", "ア"]
+
+
+def test_inserted_fragment_does_not_shift_later_romaji_lyrics():
+    words = [
+        _make_word(0.0, 0.10, "i", [(0.0, 0.10, "i")]),
+        _make_word(0.10, 0.30, "a", [(0.10, 0.30, "a")]),
+    ]
+
+    word_durs, word_vuvs, lyrics, vowels = extract_vowel_boundaries(
+        words, ["a"], language="ja"
+    )
+
+    assert lyrics == ["", "a"]
+    assert word_vuvs == [0, 1]
+
+
+def test_repeated_mora_does_not_trigger_insertion_guard():
+    words = [
+        _make_word(0.0, 0.20, "a", [(0.0, 0.20, "a")]),
+        _make_word(0.20, 0.40, "a", [(0.20, 0.40, "a")]),
+    ]
+
+    word_durs, word_vuvs, lyrics, vowels = extract_vowel_boundaries(
+        words, ["あ", "あ"], language="ja", lyric_output_mode="kana"
+    )
+
+    assert lyrics == ["あ", "あ"]
+    assert word_vuvs == [1, 1]
+    assert vowels == ["ア", "ア"]

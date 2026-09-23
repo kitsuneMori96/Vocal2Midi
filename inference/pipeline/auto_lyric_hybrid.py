@@ -546,6 +546,15 @@ def auto_lyric_hybrid_pipeline(
                 if dyn_xs:
                     dyn_result = (dyn_xs, dyn_ys)
             print(f"[Hybrid Pipeline] Velocity done. notes={len(vel_res.note_velocities)} dyn_points={len(dyn_result[0]) if dyn_result else 0}")
+            try:
+                import numpy as _np
+
+                _states = _np.asarray(vel_res.states).reshape(-1)
+                if _states.size:
+                    _hist = " ".join(f"s{s}:{int((_states == s).sum())}" for s in range(6))
+                    print(f"[Hybrid Pipeline] Velocity states: {_hist}")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[Warning] Velocity curve failed ({e}); falling back to default velocity=100.")
     
