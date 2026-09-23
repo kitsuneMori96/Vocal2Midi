@@ -50,6 +50,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "output_lyrics": {"zh": "输出歌词", "en": "Output Lyrics"},
     "export_format": {"zh": "导出格式", "en": "Export"},
     "pitch_curve": {"zh": "输出音高曲线", "en": "Pitch Curve"},
+    "velocity_curve": {"zh": "输出力度曲线", "en": "Velocity Curve"},
     "output_settings": {"zh": "输出设置", "en": "Output Settings"},
     "tempo_bpm": {"zh": "Tempo BPM:", "en": "Tempo BPM:"},
     "quant_step": {"zh": "MIDI 量化精度:", "en": "Quantization:"},

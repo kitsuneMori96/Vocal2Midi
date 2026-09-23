@@ -71,6 +71,7 @@ class PipelineConfig:
     phoneme_asr_model_path: str = ""
     pinyin_asr_model_path: str = ""
     output_pitch_curve: bool = False
+    output_velocity_curve: bool = False
     cancel_checker: Optional[Callable[[], bool]] = None
 
     def to_kwargs(self) -> dict:
@@ -106,5 +107,6 @@ class PipelineConfig:
             "phoneme_asr_model_path": self.phoneme_asr_model_path,
             "pinyin_asr_model_path": self.pinyin_asr_model_path,
             "output_pitch_curve": self.output_pitch_curve,
+            "output_velocity_curve": self.output_velocity_curve,
             "cancel_checker": self.cancel_checker,
         }

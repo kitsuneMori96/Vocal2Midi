@@ -222,6 +222,13 @@ class AutoLyricInterface(ScrollArea):
         self.cb_pitch_curve.setChecked(self.global_settings.settings.value("output_pitch_curve", True, type=bool))
         self.cb_pitch_curve.checkedChanged.connect(lambda v: self.global_settings.settings.setValue("output_pitch_curve", v))
         self._add_flow_pair(combo_row2, "pitch_curve", self.cb_pitch_curve, label=self.pitch_curve_label)
+        combo_row2.addSpacing(28)
+        self.velocity_curve_label = BodyLabel(self)
+        self.cb_velocity_curve = SwitchButton("On", self)
+        self.cb_velocity_curve.setOffText("Off")
+        self.cb_velocity_curve.setChecked(self.global_settings.settings.value("output_velocity_curve", True, type=bool))
+        self.cb_velocity_curve.checkedChanged.connect(lambda v: self.global_settings.settings.setValue("output_velocity_curve", v))
+        self._add_flow_pair(combo_row2, "velocity_curve", self.cb_velocity_curve, label=self.velocity_curve_label)
         combo_row2.addStretch(1)
         combo_layout.addLayout(combo_row2)
 
@@ -490,9 +497,13 @@ class AutoLyricInterface(ScrollArea):
         self._update_pitch_curve_enabled()
 
     def _update_pitch_curve_enabled(self):
-        enabled = self.get_export_format() in {"ustx", "vsqx"}
-        self.pitch_curve_label.setEnabled(enabled)
-        self.cb_pitch_curve.setEnabled(enabled)
+        fmt = self.get_export_format()
+        pitch_enabled = fmt in {"ustx", "vsqx"}
+        self.pitch_curve_label.setEnabled(pitch_enabled)
+        self.cb_pitch_curve.setEnabled(pitch_enabled)
+        velocity_enabled = fmt in {"mid", "ustx"}
+        self.velocity_curve_label.setEnabled(velocity_enabled)
+        self.cb_velocity_curve.setEnabled(velocity_enabled)
 
     def update_lyric_output_options(self, *_args):
         language = self._selected_language()
@@ -591,6 +602,7 @@ class AutoLyricInterface(ScrollArea):
             output_formats=output_formats,
             output_lyrics=self.cb_output_lyrics.isChecked(),
             output_pitch_curve=self.cb_pitch_curve.isChecked() if selected_export_format in {"ustx", "vsqx"} else False,
+            output_velocity_curve=self.cb_velocity_curve.isChecked() if selected_export_format in {"mid", "ustx"} else False,
             slicing_method=self.slicing_combo.currentData(),
             slice_min_sec=slice_min_sec,
             slice_max_sec=slice_max_sec,
