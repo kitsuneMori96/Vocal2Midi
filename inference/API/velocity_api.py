@@ -27,6 +27,10 @@ import numpy as np
 FRAME_LENGTH = 2048
 HOP_LENGTH = 512
 EMISSION_EPS = 1e-10
+# Frames more than this far below the utterance peak count as silence and
+# are excluded from the p10-p95 content normalization (D1 fix).
+SILENCE_DB_DROP = 50.0
+_MIN_CONTENT_FRAMES = 8
 
 # 6 dynamics states pp/p/mp/mf/f/ff; Gaussian membership centers + velocity map.
 N_VELOCITY_STATES = 6
@@ -59,8 +63,15 @@ def extract_rms_obs(
     """Compute per-frame normalized loudness observation.
 
     Steps: mono-mix -> librosa.feature.rms -> amplitude_to_dB(ref=max)
-    -> per-utterance p10-p95 normalize to [0,1].
-    Degenerate (constant/silent) input -> 0.5 mid to avoid div-by-zero.
+    -> content-aware p10-p95 normalize to [0,1].
+
+    Content-aware (D1 fix): UVR-gated vocals are bimodal (digital silence
+    vs compressed singing). Whole-utterance percentiles let the silence
+    floor drag p10 down so ALL sung frames crush to ~1.0 and the HMM
+    collapses to states {0, 5}. Instead, frames >50dB below peak count
+    as silence (obs=0.0) and p10-p95 is taken over content frames only,
+    spreading real sung dynamics across the full [0,1] range.
+    Degenerate (constant/silent/too-few-content) input -> 0.5 mid.
     """
     wav = np.asarray(waveform, dtype=np.float32)
     if wav.ndim > 1:
@@ -88,13 +99,20 @@ def extract_rms_obs(
     else:
         floor = float(finite.min())
         db_safe = np.where(np.isfinite(db), db, floor).astype(np.float32)
-        p10 = float(np.percentile(db_safe, 10))
-        p95 = float(np.percentile(db_safe, 95))
-        span = p95 - p10
-        if span < 1e-6:
+        peak = float(db_safe.max())
+        is_content = db_safe >= (peak - SILENCE_DB_DROP)
+        content = db_safe[is_content]
+        if content.size < _MIN_CONTENT_FRAMES:
             norm = np.full_like(db_safe, 0.5, dtype=np.float32)
         else:
-            norm = np.clip((db_safe - p10) / span, 0.0, 1.0).astype(np.float32)
+            p10 = float(np.percentile(content, 10))
+            p95 = float(np.percentile(content, 95))
+            span = p95 - p10
+            if span < 1e-6:
+                norm = np.full_like(db_safe, 0.5, dtype=np.float32)
+            else:
+                norm = np.clip((db_safe - p10) / span, 0.0, 1.0).astype(np.float32)
+                norm[~is_content] = 0.0
         db = db_safe
 
     frame_times = (np.arange(rms.shape[0], dtype=np.float64) * float(hop_length) / float(sr)).astype(np.float64)
