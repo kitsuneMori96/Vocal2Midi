@@ -1,0 +1,11 @@
+# soft-tree repo: code only. Runtime, models and personal configs stay local.
+python/
+experiments/
+settings/*.ini
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.pytest_cache/
+# llama.cpp windows binaries (100MB+, regenerable, deployment-only)
+inference/qwen3asr_dml/bin/
