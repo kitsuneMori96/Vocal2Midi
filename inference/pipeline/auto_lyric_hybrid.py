@@ -257,6 +257,7 @@ def _run_game_stage(
                 seg_threshold, seg_radius, est_threshold, batch_size,
                 cancel_checker=cancel_checker,
                 language=ctx.fa_language,
+                lyric_output_mode=ctx.lyric_output_mode,
             )
             if isinstance(aligned_result, tuple):
                 all_notes, processed_aligned_chunks = aligned_result

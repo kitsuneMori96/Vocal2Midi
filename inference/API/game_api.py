@@ -79,6 +79,32 @@ def _find_word_nucleus_start(word, language: str | None) -> float | None:
     return None
 
 
+# Romaji vowel -> katakana row for kana lyric mode tail auto-fill.
+_ROMAJI_VOWEL_TO_KANA = {"a": "ア", "i": "イ", "u": "ウ", "e": "エ", "o": "オ", "N": "ン"}
+
+
+def _word_nucleus_vowel(word, language: str | None, lyric_output_mode: str | None = None) -> str | None:
+    """Nucleus vowel display text for melisma tail auto-fill, or None.
+
+    Tail notes used to get '-'; with the nucleus vowel they sing the right
+    sound in OpenUtau without manual filling. English returns None (ARPABET
+    -> orthography mapping is unreliable; '+' markers already carry it).
+    """
+    lang = (language or "").lower()
+    if lang == "en":
+        return None
+    nucleus = None
+    for phoneme in getattr(word, "phonemes", None) or []:
+        if _is_singable_phone(getattr(phoneme, "text", ""), language):
+            nucleus = _normalize_phone_text(getattr(phoneme, "text", ""))
+            break
+    if not nucleus:
+        return None
+    if lang == "ja" and (lyric_output_mode or "").lower() == "kana":
+        return _ROMAJI_VOWEL_TO_KANA.get(nucleus, nucleus)
+    return nucleus
+
+
 def _english_syllable_chunks(word):
     """Split one aligned English word into per-syllable time chunks.
 
@@ -101,16 +127,19 @@ def _english_syllable_chunks(word):
     return list(zip(bounds, bounds[1:]))
 
 
-def _extract_vowel_boundaries_english(result_word, original_chars: list[str]):
+def _extract_vowel_boundaries_english(result_word, original_chars: list[str], lyric_output_mode: str | None = None):
     """Per-syllable chunk boundaries for English.
 
     Each chunk becomes one align unit for GAME; chunk 0 carries the whole word
     as its lyric and every later chunk carries "+" (the syllable-position
     marker). Melisma notes inside a chunk use the caller's sustain symbol.
+    Vowels are always None (keep '-'; ARPABET does not map reliably to
+    orthography).
     """
     word_durs = []
     word_vuvs = []
     lyrics = []
+    vowels: list = []
 
     char_idx = 0
     last_end = 0.0
@@ -121,6 +150,7 @@ def _extract_vowel_boundaries_english(result_word, original_chars: list[str]):
                 word_durs.append(word.end - last_end)
                 word_vuvs.append(0)
                 lyrics.append("")
+                vowels.append(None)
                 last_end = word.end
             continue
 
@@ -138,6 +168,7 @@ def _extract_vowel_boundaries_english(result_word, original_chars: list[str]):
                 word_durs.append(word.end - last_end)
                 word_vuvs.append(0)
                 lyrics.append("")
+                vowels.append(None)
                 last_end = word.end
             continue
 
@@ -155,6 +186,7 @@ def _extract_vowel_boundaries_english(result_word, original_chars: list[str]):
             word_durs.append(chunks[0][0] - last_end)
             word_vuvs.append(0)
             lyrics.append("")
+            vowels.append(None)
         elif chunks[0][0] < last_end:
             chunks[0] = (last_end, max(chunks[0][1], last_end + 0.001))
 
@@ -164,9 +196,10 @@ def _extract_vowel_boundaries_english(result_word, original_chars: list[str]):
             word_durs.append(chunk_end - chunk_start)
             word_vuvs.append(1)
             lyrics.append(lyric if k == 0 else "+")
+            vowels.append(None)
         last_end = chunks[-1][1]
 
-    return word_durs, word_vuvs, lyrics
+    return word_durs, word_vuvs, lyrics, vowels
 
 
 _GAME_MODEL_CACHE: dict[tuple[str, str], GameOnnxModel] = {}
@@ -201,13 +234,19 @@ def load_game_model(model_dir: str, device=None, use_cache: bool = True):
     return model
 
 
-def extract_vowel_boundaries(result_word, original_chars: list[str], language: str | None = None):
+def extract_vowel_boundaries(
+    result_word,
+    original_chars: list[str],
+    language: str | None = None,
+    lyric_output_mode: str | None = None,
+):
     if (language or "").lower() == "en":
-        return _extract_vowel_boundaries_english(result_word, original_chars)
+        return _extract_vowel_boundaries_english(result_word, original_chars, lyric_output_mode)
 
     word_durs = []
     word_vuvs = []
     lyrics = []
+    vowels: list = []
 
     char_idx = 0
     last_end = 0.0
@@ -226,6 +265,7 @@ def extract_vowel_boundaries(result_word, original_chars: list[str], language: s
                 word_durs.append(word.end - last_end)
                 word_vuvs.append(0)
                 lyrics.append("")
+                vowels.append(None)
                 last_end = word.end
             continue
 
@@ -235,6 +275,7 @@ def extract_vowel_boundaries(result_word, original_chars: list[str], language: s
                 word_durs.append(word.end - last_end)
                 word_vuvs.append(0)
                 lyrics.append("")
+                vowels.append(None)
                 last_end = word.end
             continue
 
@@ -242,6 +283,7 @@ def extract_vowel_boundaries(result_word, original_chars: list[str], language: s
             word_durs.append(vowel_start - last_end)
             word_vuvs.append(0)
             lyrics.append("")
+            vowels.append(None)
         elif vowel_start < last_end:
             vowel_start = last_end
 
@@ -268,6 +310,7 @@ def extract_vowel_boundaries(result_word, original_chars: list[str], language: s
 
         word_durs.append(dur)
         word_vuvs.append(1)
+        vowels.append(_word_nucleus_vowel(word, language, lyric_output_mode))
 
         if is_romaji:
             while char_idx < len(original_chars) and original_chars[char_idx].lower() != word.text.lower():
@@ -286,7 +329,7 @@ def extract_vowel_boundaries(result_word, original_chars: list[str], language: s
 
         last_end = note_end
 
-    return word_durs, word_vuvs, lyrics
+    return word_durs, word_vuvs, lyrics, vowels
 
 
 def _run_game_inference_batch(
@@ -332,10 +375,12 @@ def extract_pitches_and_align(
     batch_size=4,
     cancel_checker=None,
     language=None,
+    lyric_output_mode=None,
 ):
     """Extract pitches using the GAME ONNX runtime and align them to lyrics."""
-    # Melisma notes keep '-' for every language; English '+' on syllable
-    # positions comes from the per-syllable chunk lyrics instead.
+    # Melisma (pitch-transition) tail notes get the unit's nucleus vowel
+    # (zh/ja) so OpenUtau sings them without manual filling; English and
+    # units without a nucleus keep '-' (see _word_nucleus_vowel).
     sustain_lyric = "-"
     logger.info("[Hybrid Pipeline] Extracting pitches with GAME ONNX...")
 
@@ -356,10 +401,11 @@ def extract_pitches_and_align(
             logger.warning(f"[Warning] {stem}: empty HFA word result; skipping lyric-aligned GAME for this chunk.")
             continue
 
-        word_durs, word_vuvs, lyrics = extract_vowel_boundaries(
+        word_durs, word_vuvs, lyrics, vowels = extract_vowel_boundaries(
             result_word,
             chars_dict.get(stem, []),
             language=language,
+            lyric_output_mode=lyric_output_mode,
         )
         if not word_durs:
             logger.warning(f"[Warning] {stem}: no usable word durations; skipping lyric-aligned GAME for this chunk.")
@@ -375,6 +421,7 @@ def extract_pitches_and_align(
                 "offset": chunk["offset"],
                 "word_vuvs": word_vuvs,
                 "lyrics": lyrics,
+                "vowels": vowels,
             }
         )
 
@@ -430,6 +477,8 @@ def extract_pitches_and_align(
             lyric_idx = 0
             current_onset = info["offset"]
             pending_lyric = ""
+            current_vowel = ""
+            unit_vowels = info.get("vowels") or []
 
             for n_seq, n_dur, n_slur in zip(a_note_seq, a_note_dur, a_note_slur):
                 if n_slur == 0:
@@ -437,8 +486,14 @@ def extract_pitches_and_align(
                         word_lyric = info["lyrics"][lyric_idx]
                         if info["word_vuvs"][lyric_idx] == 1:
                             pending_lyric = word_lyric
+                            current_vowel = (
+                                unit_vowels[lyric_idx] or ""
+                                if lyric_idx < len(unit_vowels)
+                                else ""
+                            )
                         else:
                             pending_lyric = ""
+                            current_vowel = ""
                         lyric_idx += 1
 
                 if n_seq != "rest":
@@ -446,11 +501,18 @@ def extract_pitches_and_align(
                     if pending_lyric:
                         lyric_to_assign = pending_lyric
                         pending_lyric = ""
+                        is_continuation = False
                     else:
-                        lyric_to_assign = sustain_lyric
+                        lyric_to_assign = current_vowel or sustain_lyric
+                        is_continuation = True
 
                     is_contiguous = len(all_notes) > 0 and abs(all_notes[-1].offset - current_onset) < 0.01
-                    can_merge = is_contiguous and abs(all_notes[-1].pitch - pitch) < 0.1 and lyric_to_assign == sustain_lyric
+                    can_merge = (
+                        is_continuation
+                        and is_contiguous
+                        and abs(all_notes[-1].pitch - pitch) < 0.1
+                        and all_notes[-1].lyric == lyric_to_assign
+                    )
 
                     if can_merge:
                         all_notes[-1].offset += n_dur

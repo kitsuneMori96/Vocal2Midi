@@ -78,7 +78,7 @@ def test_extract_vowel_boundaries_ja_uses_first_singable_nucleus():
         _make_word(0.25, 0.50, "ni", [(0.25, 0.33, "n"), (0.33, 0.50, "i")]),
     ]
 
-    word_durs, word_vuvs, lyrics = extract_vowel_boundaries(words, ["か", "に"], language="ja")
+    word_durs, word_vuvs, lyrics, _vowels = extract_vowel_boundaries(words, ["か", "に"], language="ja")
 
     assert word_durs == pytest.approx([0.08, 0.25, 0.17])
     assert word_vuvs == [0, 1, 1]
@@ -91,7 +91,7 @@ def test_extract_vowel_boundaries_zh_does_not_use_coda_as_vowel_start():
         _make_word(0.30, 0.60, "ni", [(0.30, 0.36, "n"), (0.36, 0.60, "i")]),
     ]
 
-    word_durs, word_vuvs, lyrics = extract_vowel_boundaries(words, ["昂", "你"], language="zh")
+    word_durs, word_vuvs, lyrics, _vowels = extract_vowel_boundaries(words, ["昂", "你"], language="zh")
 
     assert word_durs == pytest.approx([0.36, 0.24])
     assert word_vuvs == [1, 1]
@@ -104,7 +104,7 @@ def test_extract_vowel_boundaries_en_uses_arpabet_vowels():
         _make_word(0.40, 0.70, "fly", [(0.40, 0.45, "f"), (0.45, 0.50, "l"), (0.50, 0.70, "ay")]),
     ]
 
-    word_durs, word_vuvs, lyrics = extract_vowel_boundaries(
+    word_durs, word_vuvs, lyrics, _vowels = extract_vowel_boundaries(
         words, ["fall", "fly"], language="en"
     )
 
@@ -125,7 +125,7 @@ def test_extract_vowel_boundaries_en_onsets_absorbed_notes_contiguous():
         ),
     ]
 
-    word_durs, word_vuvs, lyrics = extract_vowel_boundaries(
+    word_durs, word_vuvs, lyrics, _vowels = extract_vowel_boundaries(
         words, ["my", "stop"], language="en"
     )
 
@@ -147,7 +147,7 @@ def test_extract_vowel_boundaries_en_pause_breaks_absorption():
         ),
     ]
 
-    word_durs, word_vuvs, lyrics = extract_vowel_boundaries(
+    word_durs, word_vuvs, lyrics, _vowels = extract_vowel_boundaries(
         words, ["my", "stop"], language="en"
     )
 
@@ -171,7 +171,7 @@ def test_extract_vowel_boundaries_en_multisyllable_starts_at_vowels():
         ),
     ]
 
-    word_durs, word_vuvs, lyrics = extract_vowel_boundaries(
+    word_durs, word_vuvs, lyrics, _vowels = extract_vowel_boundaries(
         words, ["possible"], language="en"
     )
 
@@ -225,7 +225,7 @@ def test_extract_vowel_boundaries_cantonese_jyutping_not_overridden_by_hanzi():
         _make_word(0.0, 0.3, "冷", [(0.0, 0.1, "l"), (0.1, 0.3, "aang")]),
         _make_word(0.3, 0.6, "风", [(0.3, 0.4, "f"), (0.4, 0.6, "ung")]),
     ]
-    _, _, lyrics = extract_vowel_boundaries(words, ["laang", "fung"], language="yue")
+    _, _, lyrics, _ = extract_vowel_boundaries(words, ["laang", "fung"], language="yue")
     assert lyrics == ["", "laang", "fung"]
 
 
@@ -234,7 +234,7 @@ def test_extract_vowel_boundaries_mandarin_pinyin_not_overridden_by_hanzi():
         _make_word(0.0, 0.3, "冷", [(0.0, 0.1, "l"), (0.1, 0.3, "eng")]),
         _make_word(0.3, 0.6, "风", [(0.3, 0.4, "f"), (0.4, 0.6, "eng")]),
     ]
-    _, _, lyrics = extract_vowel_boundaries(words, ["leng", "feng"], language="zh")
+    _, _, lyrics, _ = extract_vowel_boundaries(words, ["leng", "feng"], language="zh")
     assert lyrics == ["", "leng", "feng"]
 
 
