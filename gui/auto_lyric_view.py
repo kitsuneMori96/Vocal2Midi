@@ -21,6 +21,7 @@ from gui.fluent_compat import (
     InfoBar,
     InfoBarPosition,
     IndeterminateProgressRing,
+    accent_color,
 )
 
 from application.config import PipelineConfig, validate_slice_bounds
@@ -104,6 +105,13 @@ class AutoLyricInterface(ScrollArea):
         self._audio_card = audio_card
         self._combo_card = None  # set after cards are built
         self._output_card = None
+
+        # Drop hint between the header and the file list (audio_list must
+        # exist first: _bind_tr fires the callback immediately).
+        self._drop_active = False
+        self._drop_hint = BodyLabel(self)
+        self._bind_tr(lambda: self._refresh_drop_hint())
+        self._audio_card_stretch.insertWidget(1, self._drop_hint)
 
         self.lyric_card = CardWidget(self)
         lyric_layout = QVBoxLayout(self.lyric_card)
@@ -294,25 +302,73 @@ class AutoLyricInterface(ScrollArea):
         row.addWidget(label)
         row.addWidget(widget)
 
+    @staticmethod
+    def _audio_urls(event) -> list:
+        return [
+            url.toLocalFile() for url in event.mimeData().urls()
+            if url.isLocalFile() and pathlib.Path(url.toLocalFile()).suffix.lower() in AudioFileList.AUDIO_EXTENSIONS
+        ]
+
+    def _refresh_drop_hint(self):
+        """Drop hint: emphasized while dragging; otherwise only when empty."""
+        if getattr(self, "_drop_active", False):
+            self._drop_hint.setText(tr("drop_now_hint"))
+            self._drop_hint.setVisible(True)
+        else:
+            self._drop_hint.setText(tr("drop_audio_hint"))
+            self._drop_hint.setVisible(self.audio_list.count() == 0)
+
+    def _set_drop_highlight(self, on: bool):
+        self._drop_active = on
+        if on:
+            # NOTE: the selector must stay qualified. A bare "border: ..."
+            # rule behaves like "*" and would draw nested dashed frames on
+            # every child row (hint + file rows) inside the card.
+            accent = accent_color()
+            self._audio_card.setStyleSheet(
+                f"CardWidget {{ border: 2px dashed {accent}; border-radius: 8px; }}"
+            )
+        else:
+            self._audio_card.setStyleSheet("")
+        self._refresh_drop_hint()
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+            self._set_drop_highlight(bool(self._audio_urls(event)))
         else:
             event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._set_drop_highlight(False)
 
     def dragMoveEvent(self, event):
         event.acceptProposedAction()
 
     def dropEvent(self, event):
-        paths = [
-            url.toLocalFile() for url in event.mimeData().urls()
-            if url.isLocalFile() and pathlib.Path(url.toLocalFile()).suffix.lower() in AudioFileList.AUDIO_EXTENSIONS
-        ]
+        paths = self._audio_urls(event)
+        self._set_drop_highlight(False)
         if paths:
             event.acceptProposedAction()
-            self.audio_list.add_paths(paths)
+            if self.audio_list.add_paths(paths):
+                self._maybe_follow_audio_dir(paths)
+        elif event.mimeData().hasUrls():
+            self.log_msg(tr("drop_unsupported"))
+            event.ignore()
         else:
             event.ignore()
+
+    def _maybe_follow_audio_dir(self, paths) -> None:
+        """Point the save dir at the first new file's folder — but only while
+        the user hasn't customized it (empty or still the app default)."""
+        if not paths:
+            return
+        root = getattr(self.global_settings, "project_root", None)
+        if self.save_dir_edit.text().strip() not in ("", str(default_output_dir(root))):
+            return
+        parent = str(pathlib.Path(paths[0]).expanduser().parent)
+        if parent and parent != self.save_dir_edit.text().strip():
+            self.save_dir_edit.setText(parent)  # textChanged persists to settings
 
     def log_msg(self, msg):
         self.log_edit.log(msg)
@@ -546,7 +602,8 @@ class AutoLyricInterface(ScrollArea):
             )
             files = [file] if file else []
         if files:
-            self.audio_list.add_paths(files)
+            if self.audio_list.add_paths(files):
+                self._maybe_follow_audio_dir(files)
 
     def clear_audio_files(self):
         self.audio_list.clear_all()
@@ -565,6 +622,7 @@ class AutoLyricInterface(ScrollArea):
             self.run_status_label.setText(tr("batch_mode", n=file_count))
         elif not self._is_running:
             self.run_status_label.setText("")
+        self._refresh_drop_hint()
 
     def _current_base_values(self) -> dict:
         """Snapshot every parameter the main UI currently controls.

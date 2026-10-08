@@ -92,6 +92,10 @@ _ACCENT = "#009faa"
 _ACCENT_HOVER = "#00a7b3"
 _ACCENT_PRESSED = "#3eabb3"
 
+
+def accent_color() -> str:
+    return _ACCENT
+
 # UI font stack, matching the original library's default families and order.
 _FONT_FAMILIES = ("Segoe UI", "Microsoft YaHei", "PingFang SC")
 _FONT_CACHE: QFont | None = None

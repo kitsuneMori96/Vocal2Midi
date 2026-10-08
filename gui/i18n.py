@@ -104,6 +104,9 @@ _STRINGS: dict[str, dict[str, str]] = {
     "run": {"zh": "开始全自动提取", "en": "Start Extraction"},
     "stop": {"zh": "强制停止", "en": "Force Stop"},
     "files_added": {"zh": "已添加 {n} 个音频文件", "en": "{n} audio file(s) added"},
+    "drop_audio_hint": {"zh": "也可以直接把音频文件拖到这里", "en": "You can also drop audio files here"},
+    "drop_now_hint": {"zh": "松开鼠标添加音频文件", "en": "Release to add the audio files"},
+    "drop_unsupported": {"zh": "仅支持音频文件，已忽略", "en": "Only audio files are supported; ignored"},
     "err_hybrid": {
         "zh": "错误: 混合管线未能正确加载，请检查环境。",
         "en": "Error: hybrid pipeline failed to load, please check the environment.",

@@ -32,6 +32,7 @@ class _FluentMainWindow(FluentWindow):
             self.setWindowIcon(app_icon)
         self.resize(1000, 800)
         self._apply_fixed_physical_size(1260, 1000)
+        self._center_on_available_screen()
 
         # Apply the saved language before building any widget so every page
         # constructs in the right language.
@@ -87,6 +88,22 @@ class _FluentMainWindow(FluentWindow):
         size = QSize(max(1, round(width / dpr)), max(1, round(height / dpr)))
         self.resize(size)
         self.setFixedSize(size)
+
+    def _center_on_available_screen(self):
+        """Center the window in the available geometry (excludes the taskbar).
+
+        The OS default placement tends to sit low, leaving the bottom of
+        this fixed-size window hidden behind the taskbar. Called before
+        show(); move() pre-show is honored on all platforms.
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        geo = self.frameGeometry()
+        x = avail.x() + max(0, (avail.width() - geo.width()) // 2)
+        y = avail.y() + max(0, (avail.height() - geo.height()) // 2)
+        self.move(x, y)
 
     def _load_theme(self):
         raw = str(self.globalSettingsInterface.settings.value("theme", "light")).strip().lower()
