@@ -18,7 +18,12 @@ from inference.io.note_io import _save_midi, _save_text
 from inference.quant.quantization import quantize_notes, should_apply_quantization
 
 from inference.API.lfa_api import create_lyric_matcher, _normalize_lyric_output_mode
-from inference.API.game_api import load_game_model, extract_pitches_and_align, extract_pitches_only
+from inference.API.game_api import (
+    collapse_vibrato_tails,
+    extract_pitches_and_align,
+    extract_pitches_only,
+    load_game_model,
+)
 from inference.API.rmvpe_api import RmvpeTranscriber
 from inference.API.ustx_api import save_ustx
 from inference.API.vsqx_api import save_vsqx
@@ -232,6 +237,7 @@ def _run_game_stage(
     seg_radius,
     est_threshold,
     cancel_checker,
+    chunk_logs=None,
 ):
     """Stage 3: GAME note extraction with per-chunk pitch-only fallback."""
     all_notes = []
@@ -294,6 +300,10 @@ def _run_game_stage(
         # Model stays cached in load_game_model across runs; tearing the
         # DirectML session down per song access-violates onnxruntime next song.
         free_memory()
+    if outcome is not None and outcome.aligned:
+        vibrato_logs = collapse_vibrato_tails(all_notes)
+        if chunk_logs is not None:
+            chunk_logs.extend(vibrato_logs)
     return all_notes
 
 
@@ -452,6 +462,7 @@ def auto_lyric_hybrid_pipeline(
         seg_radius=seg_radius,
         est_threshold=est_threshold,
         cancel_checker=cancel_checker,
+        chunk_logs=chunk_logs,
     )
 
     _export_outputs(

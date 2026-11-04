@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from inference.API.game_api import extract_pitches_only, extract_vowel_boundaries
+from inference.API.game_api import (
+    collapse_vibrato_tails,
+    extract_pitches_only,
+    extract_vowel_boundaries,
+)
+from inference.io.note_io import NoteInfo
 from inference.HubertFA.tools.align_word import Phoneme, Word
 
 
@@ -190,6 +195,113 @@ def test_en_singable_phones_reject_consonant_v_names():
     assert _is_singable_phone("ay", "en")
     assert not _is_singable_phone("en/v", "en")
     assert not _is_singable_phone("en/_r", "en")
+
+
+def _note(onset, dur, pitch, lyric):
+    return NoteInfo(onset=onset, offset=onset + dur, pitch=pitch, lyric=lyric)
+
+
+# Real GAME output for 月夜の君と空の上 110.17-111.22s: the sustained 「イ」 tail
+# of 「に」 wobbles and the model shredded it into six short fragments.
+def test_collapse_vibrato_tails_absorbs_measured_phrase_final_vibrato():
+    notes = [_note(*args) for args in [
+        (110.1694, 0.291, 60.0, "ni"),
+        (110.4602, 0.089, 58.0, "イ"),
+        (110.5496, 0.120, 61.0, "イ"),
+        (110.6697, 0.111, 59.0, "イ"),
+        (110.7804, 0.120, 62.0, "イ"),
+        (110.9005, 0.109, 57.0, "イ"),
+        (111.0099, 0.211, 62.0, "イ"),
+    ]]
+
+    logs = collapse_vibrato_tails(notes)
+
+    assert len(notes) == 1
+    assert notes[0].lyric == "ni"
+    assert notes[0].pitch == pytest.approx(60.0)
+    assert notes[0].offset == pytest.approx(111.2207, abs=1e-3)
+    assert any("absorbed" in line for line in logs)
+
+
+def test_collapse_vibrato_tails_keeps_mid_phrase_fragments():
+    # 107.86s: the 「エ」 tail is also shredded, but another word follows
+    # immediately, so absorbing would swallow a real syllable.
+    notes = [
+        _note(107.0500, 0.810, 60.0, "ge"),
+        _note(107.8602, 0.080, 59.0, "エ"),
+        _note(107.9402, 0.170, 60.0, "エ"),
+        _note(108.1097, 0.151, 60.0, "エ"),
+        _note(108.2604, 0.129, 61.0, "no"),
+    ]
+    before = [(n.onset, n.offset, n.pitch, n.lyric) for n in notes]
+
+    logs = collapse_vibrato_tails(notes)
+
+    assert [(n.onset, n.offset, n.pitch, n.lyric) for n in notes] == before
+    assert logs == []
+
+
+def test_collapse_vibrato_tails_keeps_stepping_pitches_at_phrase_end():
+    # Same lyric and phrase-final, but the pitch steps upward instead of
+    # alternating around one centre: that is a real melisma, not vibrato.
+    notes = [
+        _note(20.000, 0.300, 60.0, "ni"),
+        _note(20.300, 0.120, 61.0, "イ"),
+        _note(20.420, 0.120, 63.0, "イ"),
+        _note(20.540, 0.120, 65.0, "イ"),
+    ]
+
+    logs = collapse_vibrato_tails(notes)
+
+    assert len(notes) == 4
+    assert any("kept" in line for line in logs)
+
+
+def test_collapse_vibrato_tails_requires_matching_previous_vowel():
+    notes = [
+        _note(30.000, 0.300, 60.0, "ka"),
+        _note(30.300, 0.120, 59.0, "イ"),
+        _note(30.420, 0.120, 61.0, "イ"),
+        _note(30.540, 0.120, 59.0, "イ"),
+    ]
+
+    assert collapse_vibrato_tails(notes) == []
+    assert len(notes) == 4
+
+
+def test_collapse_vibrato_tails_requires_vowel_only_kana_lyric():
+    notes = [
+        _note(40.000, 0.300, 64.0, "yo"),
+        _note(40.300, 0.200, 60.0, "ko"),
+        _note(40.500, 0.200, 59.0, "ko"),
+        _note(40.700, 0.200, 61.0, "ko"),
+    ]
+
+    assert collapse_vibrato_tails(notes) == []
+    assert len(notes) == 4
+
+
+def test_collapse_vibrato_tails_requires_short_fragments():
+    notes = [
+        _note(50.000, 0.300, 60.0, "ni"),
+        _note(50.300, 0.400, 59.0, "イ"),
+        _note(50.700, 0.120, 61.0, "イ"),
+        _note(50.820, 0.120, 59.0, "イ"),
+    ]
+
+    assert collapse_vibrato_tails(notes) == []
+    assert len(notes) == 4
+
+
+def test_collapse_vibrato_tails_keeps_whole_song_notes_list_identity():
+    notes = [_note(0.0, 0.5, 60.0, "ni"), _note(0.5, 0.2, 59.0, "イ"),
+             _note(0.7, 0.2, 61.0, "イ"), _note(0.9, 0.2, 59.0, "イ")]
+    kept = notes
+
+    collapse_vibrato_tails(notes)
+
+    assert notes is kept
+    assert len(notes) == 1
 
 
 def test_load_game_model_reuses_cached_session(monkeypatch, tmp_path):

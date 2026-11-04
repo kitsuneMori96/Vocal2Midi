@@ -363,6 +363,130 @@ def _run_game_inference_batch(
     )
 
 
+# Melisma tails are filled with the unit's nucleus vowel as kana
+# (_word_nucleus_vowel), so a run of notes carrying the same vowel-only kana can
+# only be one sung mora. GAME splits a sustained vowel whose pitch wobbles into
+# short alternating-pitch fragments, which the same-pitch merge in the chunk
+# loop cannot join.
+_VOWEL_ONLY_KANA = frozenset("あいうえおアイウエオ")
+_KANA_ROWS = {
+    "a": "あかさたなはまやらわがざだばぱぁゃ",
+    "i": "いきしちにひみりゐぎじぢびぴぃ",
+    "u": "うくすつぬふむゆるゔぐずづぶぷぅゅ",
+    "e": "えけせてねへめれゑげぜでべぺぇ",
+    "o": "おこそとのほもよろをごぞどぼぽをぉょ",
+}
+_KANA_VOWEL = {kana: vowel for vowel, kana in _KANA_ROWS.items() for kana in kana}
+_KANA_VOWEL["ん"] = "N"
+
+VIBRATO_MIN_FRAGMENTS = 3
+VIBRATO_MAX_FRAGMENT_SEC = 0.25
+VIBRATO_MIN_SPAN_SEC = 0.30
+VIBRATO_JOIN_SEC = 0.005
+VIBRATO_PHRASE_GAP_SEC = 0.60
+VIBRATO_MAX_CENTRE_OFFSET = 1.0
+VIBRATO_MIN_REVERSALS = 2
+
+
+def _lyric_vowel(lyric: str) -> str | None:
+    """Nucleus vowel of a ja lyric written as kana, katakana or romaji."""
+    text = str(lyric or "").strip()
+    if not text:
+        return None
+    ch = text[-1]
+    if 0x30A1 <= ord(ch) <= 0x30F6:
+        ch = chr(ord(ch) - 0x60)
+    if ch in _KANA_VOWEL:
+        return _KANA_VOWEL[ch]
+    for c in reversed(text.lower()):
+        if c in "aiueo":
+            return c
+        if c == "n":
+            return "N"
+    return None
+
+
+def _direction_reversals(pitches: list[float], reference: float) -> int:
+    """How often the fragment pitch crosses the reference pitch.
+
+    A vibrato bounces across the note it belongs to several times; a melisma
+    that steps to another pitch keeps one direction or stops.
+    """
+    signs = []
+    for pitch in pitches:
+        delta = pitch - reference
+        if abs(delta) < 0.25:
+            continue
+        signs.append(1 if delta > 0 else -1)
+    return sum(1 for a, b in zip(signs, signs[1:]) if a != b)
+
+
+def collapse_vibrato_tails(notes: list[NoteInfo]) -> list[str]:
+    """Absorb phrase-final vibrato fragments into the note they belong to.
+
+    Every gate must hold or the notes are left untouched: the run carries a
+    vowel-only kana lyric matching the previous note's vowel, it is the last
+    phrase of the song, its fragments are short and contiguous, and their
+    pitch alternates around the previous note's pitch instead of stepping to a
+    new one. Absorbing only lengthens the previous note, so no pitch is
+    invented; the exported pitch curve keeps the vibrato.
+    """
+    ordered = sorted(notes, key=lambda n: (n.onset, n.offset))
+    logs: list[str] = []
+    absorbed: list[NoteInfo] = []
+    total = len(ordered)
+
+    i = 0
+    while i < total:
+        j = i + 1
+        while (
+            j < total
+            and ordered[j].lyric == ordered[i].lyric
+            and ordered[j].onset - ordered[j - 1].offset <= VIBRATO_JOIN_SEC
+        ):
+            j += 1
+        start, i = i, j
+        run = ordered[start:j]
+
+        if len(run) < VIBRATO_MIN_FRAGMENTS or run[0].lyric not in _VOWEL_ONLY_KANA:
+            continue
+        if any(n.offset - n.onset > VIBRATO_MAX_FRAGMENT_SEC for n in run):
+            continue
+        if run[-1].offset - run[0].onset < VIBRATO_MIN_SPAN_SEC:
+            continue
+        prev = ordered[start - 1] if start > 0 else None
+        if prev is None or run[0].onset - prev.offset > VIBRATO_JOIN_SEC:
+            continue
+        if _lyric_vowel(prev.lyric) != _lyric_vowel(run[0].lyric):
+            continue
+        if j < total and ordered[j].onset - run[-1].offset < VIBRATO_PHRASE_GAP_SEC:
+            continue
+
+        pitches = [n.pitch for n in run]
+        centre = float(np.median(pitches))
+        reversals = _direction_reversals(pitches, prev.pitch)
+        if abs(centre - prev.pitch) > VIBRATO_MAX_CENTRE_OFFSET or reversals < VIBRATO_MIN_REVERSALS:
+            logs.append(
+                f"[GAME] vibrato tail kept @ {run[0].onset:.2f}-{run[-1].offset:.2f}s: "
+                f"{len(run)} fragments '{run[0].lyric}' centre {centre:.1f} vs prev "
+                f"{prev.pitch:.1f} ({prev.lyric}), reversals {reversals}"
+            )
+            continue
+
+        prev.offset = run[-1].offset
+        absorbed.extend(run)
+        logs.append(
+            f"[GAME] vibrato tail absorbed @ {run[0].onset:.2f}-{run[-1].offset:.2f}s: "
+            f"{len(run)} fragments '{run[0].lyric}' -> 1 note '{prev.lyric}' "
+            f"(centre {centre:.1f}, prev {prev.pitch:.1f}, reversals {reversals})"
+        )
+
+    if absorbed:
+        dropped = {id(n) for n in absorbed}
+        notes[:] = [n for n in notes if id(n) not in dropped]
+    return logs
+
+
 def extract_pitches_and_align(
     chunks,
     sr,
