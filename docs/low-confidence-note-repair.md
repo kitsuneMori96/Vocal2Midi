@@ -23,6 +23,8 @@
 
 三个症状是同一个原因的不同表现，所以修复也必须分层，而不是只调阈值。
 
+但这不是唯一的丢失链。§6.1 实测到另一类：干声正常、ASR 与 GAME 都检到了音，最终却在词↔note 配对里被静默丢掉。这条链与音量无关，必须单独修，否则换 stem 也救不回来。
+
 ## 3. 两条关键判断（本次讨论的核心）
 
 1. **多输入是关键想法。** 被“剥离”的音并没有从原始音频里消失，它还在和声 stem / 分离前的原人声轨里。用单一干声做识别，等于主动丢掉了信息。
@@ -46,7 +48,7 @@
 
 ### B. 断点 / 低置信区检测器（RepairRegion）
 
-输出结构：`RepairRegion[start, end, kind, confidence, evidence]`，`kind ∈ {stripped_note, low_gain, genuine_rest, leakage}`。
+输出结构：`RepairRegion[start, end, kind, confidence, evidence]`，`kind ∈ {stripped_note, low_gain, align_loss, genuine_rest, leakage}`。`align_loss` 是 §6.1 里的第二类：音频正常，丢在词↔note 配对。
 
 可用证据（多数已在管线内，成本很低）：
 
@@ -64,8 +66,9 @@
 - 剥离性衰减：`drop = ref_dB − dry_dB ≥ 8 dB`（实测真断点的 drop 落在 12–55 dB）。
 - `stripped_note`（可只做增益复原）还要 dry 侧留音：`dry_voiced ≥ 0.5` 且与参照轨 F0 相差 `≤ 35 cent`。
 - 参照轨也无音（`voiced_fraction < 0.10`）→ `genuine_rest`，**不修复**，但要防止它被当作缺 mora 而触发左移。
+- `align_loss`：音频两路都正常（drop < 8 dB），但结构化计数对不上——同一窗内 ASR mora 数、GAME note 数、最终 USTX 单元数三者不一致。这类不靠 dB 判，靠计数判（§6.1）。
 
-阈值建议相对全曲统计量（如 voiced 段 LUFS 中位数）自适应，而不是绝对 dB。
+阈值建议相对全曲统计量（如 voiced 段 LUFS 中位数）自适应，而不是绝对 dB。**窗口统计量必须同时保留中位数和「最长连续低于阈值子段」/5 % 分位**：0.5 s 窗里 0.14 s 的空洞对中位数无影响（§6.1），只用分位数会漏掉短洞。
 
 ### C. 针对性再处理（局部，不做全局均衡）
 
@@ -84,13 +87,14 @@
 - **原词优先**：有原词时 FA 文本直接用原词分词。目前 TiFA 读的是 ASR 文本（`inference/API/lfa_api.py:330` 写 `.txt`），一旦漏检就整体移位；改成原词驱动后，漏检只影响边界精度，不影响序列。
 - **插入容忍的对齐**：matcher 用显式 Needleman–Wunsch，删除代价高于替换代价，缺 mora 时插位而非左移。
 - **索引不漂**：`inference/game/alignment_utils.py:76` 在 note 数 < 词数时，按 FA mora 时长补零长 rest 占位（`assign_by_onset` 分支已有类似思路），避免后续歌词整段前移。
+- **note 优先，不因词缺而吞音**：note 数 > 词数时，多出来的 GAME note 应并入相邻同音单元或标为无词延续，而不是整条丢弃；`cl` 这类非音节 token（§6.1 实测出现在 ASR 输出里）不占音节槽位。当前 `alignment_utils.py:212-214` 的 rest 兜底 + `game_api.py:484-498` 的一词一单元正好是反过来的。
 - **可核对的诊断**：每个 region 把“修复前后 mora 数、note 数、抬升 dB、判定依据”写进 `chunk_logs`，用户能直接看到改了哪里。
 
 ## 5. 分期与验收
 
 | 阶段 | 内容 | 目标 |
 | --- | --- | --- |
-| P0 | D 的三项 + B 只输出报告不修复 | 先止住填词错乱，并量化问题规模 |
+| P0 | D 的四项（含 §6.1 的 note 优先配对）+ B 只输出报告不修复 | 先止住填词错乱与静默吞音，并量化问题规模 |
 | P1 | 输入换成「去回声前的 Vocal stem」（或双输入按 region 取材）+ B 完整检测器 | 断音恢复；§6 显示这一步比任何修复算法都便宜 |
 | P2 | A 多输入契约（GUI + `PipelineConfig`）+ C 的局部增益复原（仅 `stripped_note`） | 覆盖 vocoder 类合成干声（没有高电平同源 stem 可用）的情况 |
 
@@ -125,6 +129,26 @@
 
 另外两条方法学教训：一开始把 ±0.1 s 的 flank 也算进窗口，短空隙几乎整段落在前后两个音符上，导致 11/45 被误判为 `stripped_note`；改成只测内部后，这一数字降到 4。参照轨也必须用人声 stem——用整曲 mix 当响度参照会把所有空隙都算成「被剥离」。
 
+### 6.1 第二类缺音：干声正常、ASR 和 GAME 都有音，最终 USTX 里没有
+
+用户截图的那句（bar 21–22，`a no shi te o mo i o ... te su ko shi da ke`）不属于上面任何一种 `kind`：去回响干声在整句范围内听感正常，`gap_probe.py` 也判不出剥离。逐级复现（窗口 52.19–52.69 s，bar 21 = 51.227 s，bpm 93.7、每小节 2.561 s）：
+
+1. **干声确实是好的。** dry 与 vocals 在 52.19–52.47 s 逐帧一致（−12 ~ −37 dB、全程 voiced，F0 从 53.2 扫到 64.0）。只有一处 0.14 s 的去回声空洞：52.50–52.64 s dry 从 −50 dB 掉到 −88.6 dB，而 vocals 仍 −34 ~ −38 dB（这一段是辅音，本来就低）。52.65 s 起两路都回到 −12 dB、F0 64.6。
+2. **ASR 没有漏。** 对 dry 的 49–55 s 做 Stage 1：`a no hi to wo o mo i o cl te su ko shi da ke fu ru e te`；短窗版 `o mo i o cl te su ku`；vocals 版 `o mo ni o te su ku`。缺口位置的 `i / o / cl` 都在。
+3. **GAME 也没有漏。** 同样 49–55 s、默认参数，输出 19 个 note，其中 `52.27 +0.230 pitch=63.99`（E4）和 `52.69 +0.440 pitch=63.99` 两个音，分裂点正好落在上面那 0.14 s 的去回声空洞上。
+4. **最终 USTX 里这两个音都没了。** 导出结果从 `51.90 +0.291 tone=55 'mo'` 直接跳到 `52.69 +0.440 tone=64 'te'`。
+
+所以这条句子既不能靠换 stem 修，也不能靠抬增益修。丢音发生在 **HFA 词 ↔ GAME note 的配对**上：这一窗有 3 个 mora（`i / o / cl`）但只有 2 个 note，`inference/game/alignment_utils.py:212-214` 对没有任何 note 重叠的词直接补 `rest`，而 `game_api.py` 的歌词循环每个输出单元消耗一个词（`inference/API/game_api.py:484-498`），`cl` 这种非音节 token 又占掉一个位置——两边一错位，`52.27` 那个 E4 就被吞掉了。
+
+结论：缺音至少有两类，判据和修法都不同。
+
+| 类型 | 音频证据 | 丢失环节 | 修法 |
+| --- | --- | --- | --- |
+| 一：`low_gain` / `stripped_note` | dry 比同源 Vocal stem 低 8–55 dB | 识别 + 音高（ASR 漏 mora、GAME 无 presence） | 换输入源（§4-C） |
+| 二：`align_loss` | dry 正常、ASR 有 mora、GAME 有 note | 词↔note 配对（`alignment_utils` 的 rest 兜底 + 一词一单元） | 对齐修复（§4-D），与音量无关 |
+
+派生要求：检测器不能只用区间分位数。上面那条 0.14 s 的空洞在 0.5 s 窗的中位数里完全看不见，必须同时统计**最长连续低于阈值子段**（或 5 % 分位），否则这类短洞会一直漏判。
+
 ## 7. 待讨论
 
 1. 有同源高电平 stem 时还需要 mix 通道吗？§6 的结论是：分离链输出的 Vocal stem 已经够用，mix 只在「只有合成干声、拿不到上游 stem」时才有价值。α 的问题因此往后放。
@@ -132,5 +156,5 @@
 3. ~~音高通道是否允许在 `stripped_note` 区临时采用 mix 的 F0？~~ 实测否：inst/mix 的 F0 与人声轨相差 500–1900 cent，器乐会带跑音高；改用 Vocal stem 的 F0（与 dry 同源、逐采样对齐）。
 4. 检测阈值按全曲统计自适应，还是暴露成 GUI 参数（“修复强度”）？§6 里 `voiced_fraction` 的 0.07 / 0.13 空档是在一首歌上量出来的，换歌（尤其是混响更长的样本）是否仍然分开，需要多几条样本再定。
 5. 去回声那一步是否还在别处悄悄吃掉软音？如果是，P1 的直接解法是「识别用 Vocal stem、音高也用 Vocal stem，No-Echo 只作为可选预处理」，而不是在下游做补洞。
-5. 是否引入 source-conditioned 的音源补全/inpainting？倾向先不上：收益不确定、工程量大，且 A+B+C 已能覆盖主要场景。
-6. GUI 形态：stem 用目录约定还是多文件选择？“修复了哪些区”是否需要可视化（日志标注 / TextGrid 标记）？
+6. 是否引入 source-conditioned 的音源补全/inpainting？倾向先不上：收益不确定、工程量大，且 A+B+C 已能覆盖主要场景。
+7. GUI 形态：stem 用目录约定还是多文件选择？“修复了哪些区”是否需要可视化（日志标注 / TextGrid 标记）？
