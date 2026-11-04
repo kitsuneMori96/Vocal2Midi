@@ -180,15 +180,51 @@ def align_notes_to_words(
         if end <= start:
             continue
 
+        # Notes that ended before this word but were left over by the previous
+        # word sit in an inter-word gap. They are still real pitches; emit them
+        # as melisma continuations instead of discarding them.
         while note_idx < len(note_end) and note_end[note_idx] <= start + _ALIGN_MIN_GAP:
+            if note_seq[note_idx] != "rest":
+                gap_note_dur = float(note_end[note_idx]) - float(note_start[note_idx])
+                if gap_note_dur > _ALIGN_MIN_GAP:
+                    has_previous = bool(new_note_seq)
+                    new_note_seq.append(note_seq[note_idx])
+                    new_note_dur.append(gap_note_dur)
+                    note_slur.append(1 if has_previous else 0)
             note_idx += 1
 
         if apply_word_uv and word_vuv[word_idx] == 0:
-            new_note_seq.append("rest")
-            new_note_dur.append(end - start)
-            note_slur.append(0)
+            # GAME can place a real note inside a word the aligner marked
+            # unvoiced (SP/rest). Dropping it deletes the pitch and shifts every
+            # following lyric, so split the rest around the note and keep it as
+            # a continuation. The first unit still consumes the word's lyric.
+            cursor = start
+            emitted = False
             while note_idx < len(note_end) and note_end[note_idx] <= end + _ALIGN_MIN_GAP:
+                seg_start = max(start, float(note_start[note_idx]))
+                seg_end = min(end, float(note_end[note_idx]))
+                seg_dur = seg_end - seg_start
+                if note_seq[note_idx] != "rest" and seg_dur > _ALIGN_MIN_GAP:
+                    lead = seg_start - cursor
+                    if lead > _ALIGN_MIN_GAP:
+                        new_note_seq.append("rest")
+                        new_note_dur.append(lead)
+                        note_slur.append(0 if not emitted else 1)
+                        emitted = True
+                    new_note_seq.append(note_seq[note_idx])
+                    new_note_dur.append(seg_dur)
+                    note_slur.append(0 if not emitted else 1)
+                    emitted = True
+                    cursor = seg_end
                 note_idx += 1
+            if not emitted:
+                new_note_seq.append("rest")
+                new_note_dur.append(end - start)
+                note_slur.append(0)
+            elif end - cursor > _ALIGN_MIN_GAP:
+                new_note_seq.append("rest")
+                new_note_dur.append(end - cursor)
+                note_slur.append(1)
             continue
 
         word_note_seq = []
