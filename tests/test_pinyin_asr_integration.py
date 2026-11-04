@@ -53,6 +53,8 @@ def _base_kwargs(tmp_path: Path) -> dict:
         "device": "cpu",
         "hfa_model_dir": "hfa",
         "asr_model_path": "asr",
+        # These tests mock the HFA stage and assert ASR routing.
+        "alignment_engine": "hfa",
         "ts": [0.0],
         "language": "zh",
         "lyric_output_mode": "auto",
