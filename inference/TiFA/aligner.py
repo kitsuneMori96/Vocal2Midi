@@ -21,6 +21,7 @@ from inference.API.hfa_api import _repair_pred_dict_short_words
 from inference.HubertFA.tools.align_word import Phoneme, Word, WordList
 from inference.HubertFA.tools.g2p import JapanesePhonemeMoraG2P
 from inference.TiFA.decoding import decode_alignment_flat
+from inference.TiFA.g2p.converters.japanese import _KANA_TO_ROMAJI
 from inference.TiFA.g2p.encoding import G2PEncodingError, encode_paths
 from inference.TiFA.g2p_pipeline import build_g2p_pipeline
 from inference.TiFA.runtime import TifaModel
@@ -66,6 +67,33 @@ def _merge_mora_phonemes(phonemes: list[str]) -> str:
     if groups:
         return "".join(mora for mora, _phones in groups)
     return "".join(phonemes)
+
+
+_ROMAJI_TO_KANA = {}
+for _kana, _romaji in _KANA_TO_ROMAJI.items():
+    _ROMAJI_TO_KANA.setdefault(_romaji, _kana)
+
+
+def _is_kana(text: str) -> bool:
+    return bool(text) and all(0x3041 <= ord(ch) <= 0x30FF for ch in text)
+
+
+def _display_kana(script: str, romaji: str) -> str:
+    """Kana lyric token for a mora.
+
+    Group scripts are only kana when the path came from a lexicon/ONNX reading
+    (kanji runs). Romaji and kana input both convert through the kana or plain
+    dictionary converter, which label groups with their romaji script, so the
+    display token has to be recovered from the mora's romaji instead.
+    """
+    if _is_kana(script):
+        return script
+    for token in (romaji, script):
+        if token:
+            kana = _ROMAJI_TO_KANA.get(token.lower())
+            if kana:
+                return kana
+    return script or romaji
 
 
 def _build_word_list(
@@ -151,7 +179,8 @@ def _build_word_list(
                 phonemes.append(Phoneme(onset, offset, _token_label(t)))
                 phoneme_cursor = offset
             romaji = _merge_mora_phonemes([p.text for p in phonemes])
-            kana = candidate_scripts[mora_index] if mora_index < len(candidate_scripts) else ""
+            script = candidate_scripts[mora_index] if mora_index < len(candidate_scripts) else ""
+            kana = _display_kana(script, romaji)
             start = phonemes[0].start
             end = max(phonemes[-1].end, start + _EPSILON)
             word = Word(start, end, romaji or kana or text)

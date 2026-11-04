@@ -79,8 +79,9 @@ def _find_word_nucleus_start(word, language: str | None) -> float | None:
     return None
 
 
-# Romaji vowel -> katakana row for kana lyric mode tail auto-fill.
-_ROMAJI_VOWEL_TO_KANA = {"a": "ア", "i": "イ", "u": "ウ", "e": "エ", "o": "オ", "N": "ン"}
+# Romaji vowel -> kana for kana lyric mode tail auto-fill; hiragana so tails
+# match the kana-mode lyrics produced by the ASR/TiFA display path.
+_ROMAJI_VOWEL_TO_KANA = {"a": "あ", "i": "い", "u": "う", "e": "え", "o": "お", "N": "ん"}
 
 
 def _word_nucleus_vowel(word, language: str | None, lyric_output_mode: str | None = None) -> str | None:

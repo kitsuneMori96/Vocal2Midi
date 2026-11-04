@@ -145,3 +145,20 @@ def test_run_tifa_fa_kanji_lexicon_text(tmp_path, model):
     assert starts == sorted(starts)
     for word in words:
         assert 0 <= word.start < word.end <= duration + 0.2
+
+
+def test_run_tifa_fa_romaji_input_yields_kana_display(tmp_path, model):
+    """The pipeline hands TiFA romaji moras, whose group scripts are romaji.
+
+    Kana mode must still get kana display tokens, so the aligner derives them
+    from the mora instead of trusting the script label.
+    """
+    _write_tone(tmp_path / "chunk_0.wav", seconds=1.6)
+    (tmp_path / "chunk_0.txt").write_text("ki mi to", encoding="utf-8")
+
+    from inference.TiFA.aligner import run_tifa_fa
+
+    pred_dict, display = run_tifa_fa(model, tmp_path, language="ja")
+
+    assert "chunk_0" in pred_dict
+    assert [kana for _romaji, kana in display["chunk_0"]] == ["き", "み", "と"]
