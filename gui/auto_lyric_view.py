@@ -2,7 +2,7 @@ import os
 import pathlib
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFileDialog
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 
 from gui.fluent_compat import (
     ScrollArea,
@@ -106,12 +106,33 @@ class AutoLyricInterface(ScrollArea):
         self._combo_card = None  # set after cards are built
         self._output_card = None
 
-        # Drop hint between the header and the file list (audio_list must
-        # exist first: _bind_tr fires the callback immediately).
-        self._drop_active = False
+        # Static hint: shown only while the list is empty. Drag feedback is
+        # NOT done by toggling this (that reflows the card mid-drag); it uses
+        # overlays with absolute geometry instead.
         self._drop_hint = BodyLabel(self)
         self._bind_tr(lambda: self._refresh_drop_hint())
         self._audio_card_stretch.insertWidget(1, self._drop_hint)
+
+        self._drop_target = "list"
+        self._drop_feedback_on = False
+        self._card_drop_overlay = QWidget(audio_card)
+        self._card_drop_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._card_drop_overlay.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._card_drop_overlay.hide()
+
+        self._drop_banner = BodyLabel(audio_card)
+        self._drop_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drop_banner.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._drop_banner.setStyleSheet(
+            "BodyLabel {"
+            f"background: {accent_color()};"
+            "color: white;"
+            "border-radius: 6px;"
+            "padding: 3px 10px;"
+            "font-size: 12px;"
+            "}"
+        )
+        self._drop_banner.hide()
 
         self.lyric_card = CardWidget(self)
         lyric_layout = QVBoxLayout(self.lyric_card)
@@ -194,7 +215,7 @@ class AutoLyricInterface(ScrollArea):
         output_layout.addWidget(output_title)
 
         opts_layout = QHBoxLayout()
-        self.tempo_spin = BpmSpinBox(self)
+        self.tempo_spin = BpmSpinBox(self, accept_drops=False)
         self.tempo_spin.setRange(10, 300)
         self.tempo_spin.setValue(120)
         self._bind_tr(lambda: self.tempo_spin.setToolTip(tr("tempo_bpm_tooltip")))
@@ -202,6 +223,14 @@ class AutoLyricInterface(ScrollArea):
         self.tempo_spin.bpmDetected.connect(self._on_bpm_detected)
         self.tempo_spin.bpmDetectFailed.connect(self._on_bpm_detect_failed)
         self._add_flow_pair(opts_layout, "tempo_bpm", self.tempo_spin)
+
+        # Standing guidance next to the BPM box; swaps text while a file hovers
+        # the box. Fixed width so the swap can never reflow the row.
+        self._bpm_drop_active = False
+        self._bpm_hint = BodyLabel(self)
+        self._bpm_hint.setStyleSheet("font-size: 12px; color: #808080;")
+        self._bind_tr(self._refresh_bpm_hint)
+        opts_layout.addWidget(self._bpm_hint)
         opts_layout.addSpacing(28)
         self.quantize_combo = ComboBox(self)
         fill_combo(self.quantize_combo, QUANT_STEP_CHOICES)
@@ -280,6 +309,10 @@ class AutoLyricInterface(ScrollArea):
         self.setWidget(self.view)
         self.setWidgetResizable(True)
         self.enableTransparentBackground()
+        # The scroll area's viewport accepts drops and is the widget Qt hands
+        # drags to, so the page-level handlers would never run. Forward them
+        # here; positions are translated from viewport coordinates.
+        self.viewport().installEventFilter(self)
 
         self.worker = None
         self._last_device = None
@@ -322,52 +355,139 @@ class AutoLyricInterface(ScrollArea):
         ]
 
     def _refresh_drop_hint(self):
-        """Drop hint: emphasized while dragging; otherwise only when empty."""
-        if getattr(self, "_drop_active", False):
-            self._drop_hint.setText(tr("drop_now_hint"))
-            self._drop_hint.setVisible(True)
-        else:
-            self._drop_hint.setText(tr("drop_audio_hint"))
-            self._drop_hint.setVisible(self.audio_list.count() == 0)
+        """Static empty-state hint only; never toggled while dragging."""
+        self._drop_hint.setText(tr("drop_audio_hint"))
+        self._drop_hint.setVisible(self.audio_list.count() == 0)
 
-    def _set_drop_highlight(self, on: bool):
-        self._drop_active = on
-        if on:
-            # NOTE: the selector must stay qualified. A bare "border: ..."
-            # rule behaves like "*" and would draw nested dashed frames on
-            # every child row (hint + file rows) inside the card.
-            accent = accent_color()
-            self._audio_card.setStyleSheet(
-                f"CardWidget {{ border: 2px dashed {accent}; border-radius: 8px; }}"
-            )
-        else:
-            self._audio_card.setStyleSheet("")
-        self._refresh_drop_hint()
+    def _refresh_bpm_hint(self):
+        text = tr("bpm_drop_now") if self._bpm_drop_active else tr("tempo_bpm_drop_hint")
+        if self._bpm_hint.text() != text:
+            self._bpm_hint.setText(text)
+        self._bpm_hint.ensurePolished()
+        fm = self._bpm_hint.fontMetrics()
+        width = max(
+            fm.horizontalAdvance(tr("tempo_bpm_drop_hint")),
+            fm.horizontalAdvance(tr("bpm_drop_now")),
+        ) + 4
+        if self._bpm_hint.minimumWidth() != width:
+            self._bpm_hint.setFixedWidth(width)
+
+    def _drop_target_at(self, pos) -> str:
+        """Which drop handler owns the cursor: the BPM box or the audio list."""
+        spin = getattr(self, "tempo_spin", None)
+        if spin is not None and spin.isVisible() and spin.rect().contains(spin.mapFrom(self, pos)):
+            return "bpm"
+        return "list"
+
+    def _sync_card_overlays(self):
+        rect = self._audio_card.rect().adjusted(1, 1, -1, -1)
+        self._card_drop_overlay.setGeometry(rect)
+        self._drop_banner.adjustSize()
+        size = self._drop_banner.size()
+        self._drop_banner.move(
+            rect.center().x() - size.width() // 2,
+            rect.center().y() - size.height() // 2,
+        )
+
+    def _update_drop_feedback(self, target: str, has_audio: bool):
+        """Refresh highlight+banner. No layout item is added or hidden here."""
+        if not has_audio:
+            self._clear_drop_feedback()
+            return
+        if self._drop_feedback_on and target == self._drop_target:
+            return
+        self._drop_target = target
+        self._drop_feedback_on = True
+        is_bpm = target == "bpm"
+        self.tempo_spin.setDropHighlight(is_bpm)
+        if self._bpm_drop_active != is_bpm:
+            self._bpm_drop_active = is_bpm
+            self._refresh_bpm_hint()
+        if is_bpm:
+            self._card_drop_overlay.hide()
+            self._drop_banner.hide()
+            return
+        self._card_drop_overlay.setStyleSheet(
+            "QWidget {"
+            "background: transparent;"
+            f"border: 2px dashed {accent_color()};"
+            "border-radius: 6px;"
+            "}"
+        )
+        self._drop_banner.setText(tr("drop_now_hint"))
+        self._sync_card_overlays()
+        self._card_drop_overlay.show()
+        self._card_drop_overlay.raise_()
+        self._drop_banner.show()
+        self._drop_banner.raise_()
+
+    def _clear_drop_feedback(self):
+        self._drop_feedback_on = False
+        self.tempo_spin.setDropHighlight(False)
+        self._card_drop_overlay.hide()
+        self._drop_banner.hide()
+        if self._bpm_drop_active:
+            self._bpm_drop_active = False
+            self._refresh_bpm_hint()
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-            self._set_drop_highlight(bool(self._audio_urls(event)))
-        else:
-            event.ignore()
+        self._handle_drag(event, event.position().toPoint())
 
     def dragLeaveEvent(self, event):
-        self._set_drop_highlight(False)
+        self._clear_drop_feedback()
 
     def dragMoveEvent(self, event):
-        event.acceptProposedAction()
+        self._handle_drag(event, event.position().toPoint())
 
     def dropEvent(self, event):
+        self._handle_drop(event, event.position().toPoint())
+
+    def eventFilter(self, watched, event):
+        """Route viewport drags into the single handler set.
+
+        Qt delivers drags to the scroll area's viewport (it accepts drops on
+        its own), so without this the page-level handlers never run. Drop
+        events are forwarded too; positions arrive in viewport coordinates.
+        """
+        if watched is self.viewport():
+            kind = event.type()
+            if kind in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                self._handle_drag(event, self.viewport().mapTo(self, event.position().toPoint()))
+                return True
+            if kind == QEvent.Type.DragLeave:
+                self._clear_drop_feedback()
+                return True
+            if kind == QEvent.Type.Drop:
+                self._handle_drop(event, self.viewport().mapTo(self, event.position().toPoint()))
+                return True
+        return super().eventFilter(watched, event)
+
+    def _handle_drag(self, event, pos):
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self._update_drop_feedback(self._drop_target_at(pos), bool(self._audio_urls(event)))
+
+    def _handle_drop(self, event, pos):
+        target = self._drop_target_at(pos)
         paths = self._audio_urls(event)
-        self._set_drop_highlight(False)
-        if paths:
-            event.acceptProposedAction()
-            self.audio_list.add_paths(paths)
-        elif event.mimeData().hasUrls():
-            self.log_msg(tr("drop_unsupported"))
+        self._clear_drop_feedback()
+        if not paths:
+            if event.mimeData().hasUrls():
+                self.log_msg(tr("drop_unsupported"))
             event.ignore()
-        else:
-            event.ignore()
+            return
+        event.acceptProposedAction()
+        if target == "bpm":
+            self.tempo_spin.recognize_bpm(paths[0])
+            return
+        self.audio_list.add_paths(paths)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._drop_feedback_on and self._card_drop_overlay.isVisible():
+            self._sync_card_overlays()
 
     def _on_audio_files_changed(self):
         self._update_batch_mode()

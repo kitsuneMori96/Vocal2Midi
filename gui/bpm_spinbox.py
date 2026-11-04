@@ -5,7 +5,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QThread, Qt, Signal
-from gui.fluent_compat import DoubleSpinBox
+from PySide6.QtWidgets import QWidget
+from gui.fluent_compat import DoubleSpinBox, accent_color
 
 from gui.audio_file_list import AudioFileList
 from gui.i18n import tr
@@ -120,27 +121,69 @@ class BpmDetectorWorker(QThread):
 
 
 class BpmSpinBox(DoubleSpinBox):
-    """DoubleSpinBox tailored for BPM input with drag-and-drop file detection."""
+    """DoubleSpinBox tailored for BPM input with drag-and-drop file detection.
+
+    ``accept_drops=False`` turns this box into a passive drop target: it takes
+    no drag events itself, so the parent can route them (the settings dialog
+    keeps the default and stays self-contained).
+    """
 
     bpmDetectStarted = Signal(str)
     bpmDetected = Signal(float, str)
     bpmDetectFailed = Signal(str, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, accept_drops: bool = True):
         super().__init__(parent=parent)
-        self.setAcceptDrops(True)
+        self._accept_drops = bool(accept_drops)
+        self.setAcceptDrops(self._accept_drops)
         self.setDecimals(2)
         self.setToolTip(tr("tempo_bpm_tooltip"))
 
         line_edit = self.lineEdit()
         if line_edit is not None:
-            line_edit.setAcceptDrops(True)
-            line_edit.installEventFilter(self)
+            # QLineEdit accepts text drops by default; when this box does not
+            # take drags, leave the line edit passive too so the event reaches
+            # the parent's single drop router instead of editing the text.
+            line_edit.setAcceptDrops(self._accept_drops)
+            if self._accept_drops:
+                line_edit.installEventFilter(self)
 
         self._active_worker: BpmDetectorWorker | None = None
 
+        # Dashed outline drawn by an overlay child: absolute geometry and
+        # mouse transparency mean showing it never reflows the layout (a
+        # reflow during a drag moves the target out from under the cursor).
+        self._drop_overlay = QWidget(self)
+        self._drop_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._drop_overlay.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._drop_overlay.hide()
+
+    def setDropHighlight(self, on: bool):
+        """Toggle the dashed drop outline without touching geometry or styles."""
+        if on:
+            self._drop_overlay.setStyleSheet(
+                "QWidget {"
+                "background: transparent;"
+                f"border: 2px dashed {accent_color()};"
+                "border-radius: 5px;"
+                "}"
+            )
+            self._sync_drop_overlay()
+            self._drop_overlay.raise_()
+            self._drop_overlay.show()
+        else:
+            self._drop_overlay.hide()
+
+    def _sync_drop_overlay(self):
+        self._drop_overlay.setGeometry(self.rect().adjusted(0, 0, -1, -1))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._drop_overlay.isVisible():
+            self._sync_drop_overlay()
+
     def eventFilter(self, watched, event):
-        if watched == self.lineEdit():
+        if self._accept_drops and watched == self.lineEdit():
             if event.type() == QEvent.Type.DragEnter:
                 self.dragEnterEvent(event)
                 return True

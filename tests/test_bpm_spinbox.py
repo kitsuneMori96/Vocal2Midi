@@ -112,6 +112,50 @@ def test_bpm_spinbox_drag_filter(qapp):
     assert event_enter_wav.isAccepted()
 
 
+def test_bpm_spinbox_can_refuse_drops(qapp, tmp_path):
+    """In the main window the parent routes drags; the box must stay passive."""
+    wav_path = tmp_path / "passive.wav"
+    create_synthetic_wav(wav_path, bpm=90.0, duration=10.0)
+
+    box = BpmSpinBox(accept_drops=False)
+    assert box.acceptDrops() is False
+    assert box.lineEdit().acceptDrops() is False
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(wav_path))])
+    drop_ev = QDropEvent(QPointF(5, 5), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    assert box.eventFilter(box.lineEdit(), drop_ev) is False
+    assert box._active_worker is None
+
+
+def test_bpm_spinbox_drop_highlight_is_layout_free(qapp):
+    """The highlight overlay must not resize the box or touch its stylesheet."""
+    box = BpmSpinBox(accept_drops=False)
+    box.setRange(10, 300)
+    box.show()
+    qapp.processEvents()
+
+    size_before = box.size()
+    style_before = box.styleSheet()
+
+    box.setDropHighlight(True)
+    qapp.processEvents()
+    assert box._drop_overlay.isVisible()
+    assert box.size() == size_before
+    assert box.styleSheet() == style_before
+
+    box.setDropHighlight(False)
+    qapp.processEvents()
+    assert not box._drop_overlay.isVisible()
+    assert box.size() == size_before
+
+
+def test_bpm_spinbox_default_still_accepts_drops(qapp):
+    box = BpmSpinBox()
+    assert box.acceptDrops() is True
+    assert box.lineEdit().acceptDrops() is True
+
+
 def test_bpm_spinbox_drop_flow(qapp, tmp_path):
     wav_path = tmp_path / "song.wav"
     create_synthetic_wav(wav_path, bpm=128.0, duration=15.0)

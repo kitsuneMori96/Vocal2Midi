@@ -108,6 +108,8 @@ _STRINGS: dict[str, dict[str, str]] = {
     "drop_audio_hint": {"zh": "也可以直接把音频文件拖到这里", "en": "You can also drop audio files here"},
     "drop_now_hint": {"zh": "松开鼠标添加音频文件", "en": "Release to add the audio files"},
     "drop_unsupported": {"zh": "仅支持音频文件，已忽略", "en": "Only audio files are supported; ignored"},
+    "tempo_bpm_drop_hint": {"zh": "可拖入音频自动识别", "en": "Drop audio to detect BPM"},
+    "bpm_drop_now": {"zh": "松开以识别 BPM", "en": "Release to detect BPM"},
     "err_hybrid": {
         "zh": "错误: 混合管线未能正确加载，请检查环境。",
         "en": "Error: hybrid pipeline failed to load, please check the environment.",
