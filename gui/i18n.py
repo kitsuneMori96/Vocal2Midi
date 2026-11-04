@@ -99,6 +99,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "quant_smart": {"zh": "智能量化", "en": "Smart"},
     "quant_simple": {"zh": "简单", "en": "Simple"},
     "save_dir": {"zh": "保存目录:", "en": "Save Directory:"},
+    "follow_audio_dir": {"zh": "跟随音频", "en": "Follow audio"},
     "browse": {"zh": "浏览", "en": "Browse"},
     "choose_folder_dialog": {"zh": "选择文件夹", "en": "Select Folder"},
     "run": {"zh": "开始全自动提取", "en": "Start Extraction"},

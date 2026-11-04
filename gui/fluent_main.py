@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 
 from gui.fluent_compat import FluentWindow, NavigationItemPosition, setTheme, Theme, FluentIcon
@@ -30,13 +30,11 @@ class _FluentMainWindow(FluentWindow):
         app_icon = _load_app_icon()
         if not app_icon.isNull():
             self.setWindowIcon(app_icon)
-        self.resize(1000, 800)
-        self._apply_fixed_physical_size(1260, 1000)
-        self._center_on_available_screen()
+        self.app_settings = create_app_settings()
+        self._restore_window_state()
 
         # Apply the saved language before building any widget so every page
         # constructs in the right language.
-        self.app_settings = create_app_settings()
         set_language(str(self.app_settings.value("language", "zh")))
 
         self.globalSettingsInterface = GlobalSettingsInterface(self)
@@ -75,35 +73,60 @@ class _FluentMainWindow(FluentWindow):
             if item is not None:
                 item.setText(tr(key))
 
-    def _apply_fixed_physical_size(self, width: int, height: int):
-        """Lock the window size in physical pixels: logical = physical / scale.
+    def _restore_window_state(self):
+        """Restore the last geometry, or use a default that fits the screen.
 
-        Qt's resize/setFixedSize take logical pixels, so passing 1260x1000
-        verbatim at 125% scaling would produce a 1575x1250 physical window.
-        The size is not re-adjusted after moving to a display with a
-        different scale factor.
+        Qt sizes are logical pixels, so the same numbers scale with the DPI
+        factor automatically.  The window stays freely resizable: no
+        setFixedSize, otherwise maximize and drag-resize are silently
+        disabled.
         """
-        screen = self.screen() or QApplication.primaryScreen()
-        dpr = screen.devicePixelRatio() if screen is not None else 1.0
-        size = QSize(max(1, round(width / dpr)), max(1, round(height / dpr)))
-        self.resize(size)
-        self.setFixedSize(size)
+        self.setMinimumSize(900, 620)
+        restored = self.restoreGeometry(self.app_settings.value("main_geometry", b""))
+        if not restored:
+            screen = self.screen() or QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen is not None else None
+            width, height = 1260, 900
+            if avail is not None:
+                width = min(width, int(avail.width() * 0.92))
+                height = min(height, int(avail.height() * 0.92))
+            self.resize(width, height)
+            self._center_on_available_screen()
+        else:
+            self._clamp_to_available_screen()
+        if self.app_settings.value("main_maximized", False, type=bool):
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
     def _center_on_available_screen(self):
-        """Center the window in the available geometry (excludes the taskbar).
-
-        The OS default placement tends to sit low, leaving the bottom of
-        this fixed-size window hidden behind the taskbar. Called before
-        show(); move() pre-show is honored on all platforms.
-        """
-        screen = self.screen() or QApplication.primaryScreen()
-        if screen is None:
+        """Center the window in the available geometry (excludes the taskbar)."""
+        avail = self._available_geometry()
+        if avail is None:
             return
-        avail = screen.availableGeometry()
         geo = self.frameGeometry()
         x = avail.x() + max(0, (avail.width() - geo.width()) // 2)
         y = avail.y() + max(0, (avail.height() - geo.height()) // 2)
         self.move(x, y)
+
+    def _clamp_to_available_screen(self):
+        """Keep a restored window reachable after a monitor change."""
+        avail = self._available_geometry()
+        if avail is None:
+            return
+        geo = self.frameGeometry()
+        if not avail.intersects(geo):
+            self.resize(
+                min(self.width(), avail.width()),
+                min(self.height(), avail.height()),
+            )
+            self._center_on_available_screen()
+            return
+        x = min(max(geo.x(), avail.left()), avail.right() - geo.width() + 1)
+        y = min(max(geo.y(), avail.top()), avail.bottom() - geo.height() + 1)
+        self.move(x, y)
+
+    def _available_geometry(self):
+        screen = self.screen() or QApplication.primaryScreen()
+        return screen.availableGeometry() if screen is not None else None
 
     def _load_theme(self):
         raw = str(self.globalSettingsInterface.settings.value("theme", "light")).strip().lower()
@@ -132,6 +155,8 @@ class _FluentMainWindow(FluentWindow):
         self.stackedWidget.setCurrentWidget(self.autoLyricInterface)
 
     def closeEvent(self, event):
+        self.app_settings.setValue("main_geometry", self.saveGeometry())
+        self.app_settings.setValue("main_maximized", self.isMaximized())
         # Destroying a running QThread crashes at exit ("QThread: Destroyed
         # while thread is still running"); stop the worker first.
         if not self.autoLyricInterface.is_running():

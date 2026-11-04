@@ -95,7 +95,7 @@ class AutoLyricInterface(ScrollArea):
         self.setAcceptDrops(True)
         self._is_running = False
         self.audio_list.filesAdded.connect(lambda n: self.log_msg(tr("files_added", n=n)))
-        self.audio_list.filesChanged.connect(self._update_batch_mode)
+        self.audio_list.filesChanged.connect(self._on_audio_files_changed)
         self.audio_list.settingsRequested.connect(self._open_file_settings)
         if self.global_settings is not None:
             if hasattr(self.global_settings, "enable_batch_mode"):
@@ -226,11 +226,23 @@ class AutoLyricInterface(ScrollArea):
         self._bind_tr(lambda: save_dir_label.setText(tr("save_dir")))
         save_layout.addWidget(save_dir_label)
         self.save_dir_edit = LineEdit(self)
+        self._suppress_save_dir_follow = True
         self.save_dir_edit.setText(
             self.global_settings.settings.value("save_dir", str(default_output_dir(self.global_settings.project_root)))
         )
-        self.save_dir_edit.textChanged.connect(lambda t: self.global_settings.settings.setValue("save_dir", t))
+        self._suppress_save_dir_follow = False
+        self.save_dir_edit.textChanged.connect(self._on_save_dir_text_changed)
         save_layout.addWidget(self.save_dir_edit, 1)
+        self.follow_dir_label = BodyLabel(self)
+        self._bind_tr(lambda: self.follow_dir_label.setText(tr("follow_audio_dir")))
+        save_layout.addWidget(self.follow_dir_label)
+        self.follow_dir_switch = SwitchButton("On", self)
+        self.follow_dir_switch.setOffText("Off")
+        self.follow_dir_switch.setChecked(
+            self.global_settings.settings.value("save_dir_follow", True, type=bool)
+        )
+        self.follow_dir_switch.checkedChanged.connect(self._on_follow_dir_toggled)
+        save_layout.addWidget(self.follow_dir_switch)
         btn_browse_save = PushButton(tr("browse"), self, FluentIcon.FOLDER)
         self._bind_tr(lambda: btn_browse_save.setText(tr("browse")))
         btn_browse_save.clicked.connect(lambda: self.browse_dir(self.save_dir_edit))
@@ -350,25 +362,57 @@ class AutoLyricInterface(ScrollArea):
         self._set_drop_highlight(False)
         if paths:
             event.acceptProposedAction()
-            if self.audio_list.add_paths(paths):
-                self._maybe_follow_audio_dir(paths)
+            self.audio_list.add_paths(paths)
         elif event.mimeData().hasUrls():
             self.log_msg(tr("drop_unsupported"))
             event.ignore()
         else:
             event.ignore()
 
-    def _maybe_follow_audio_dir(self, paths) -> None:
-        """Point the save dir at the first new file's folder — but only while
-        the user hasn't customized it (empty or still the app default)."""
+    def _on_audio_files_changed(self):
+        self._update_batch_mode()
+        self._follow_audio_dir()
+
+    def _on_save_dir_text_changed(self, text: str):
+        self.global_settings.settings.setValue("save_dir", text)
+        if self._suppress_save_dir_follow:
+            return
+        switch = getattr(self, "follow_dir_switch", None)
+        if switch is not None and switch.isChecked():
+            # A manual edit is an explicit override; stop fighting the user.
+            self._suppress_save_dir_follow = True
+            try:
+                switch.setChecked(False)
+            finally:
+                self._suppress_save_dir_follow = False
+
+    def _on_follow_dir_toggled(self, checked: bool):
+        self.global_settings.settings.setValue("save_dir_follow", checked)
+        if checked:
+            self._follow_audio_dir()
+
+    def _follow_audio_dir(self) -> None:
+        """Point the save dir at the audio folder(s) while follow mode is on."""
+        switch = getattr(self, "follow_dir_switch", None)
+        if switch is None or not switch.isChecked():
+            return
+        paths = self.audio_list.all_paths()
         if not paths:
             return
-        root = getattr(self.global_settings, "project_root", None)
-        if self.save_dir_edit.text().strip() not in ("", str(default_output_dir(root))):
-            return
-        parent = str(pathlib.Path(paths[0]).expanduser().parent)
-        if parent and parent != self.save_dir_edit.text().strip():
-            self.save_dir_edit.setText(parent)  # textChanged persists to settings
+        parents = [pathlib.Path(p).expanduser().parent for p in paths]
+        try:
+            target = pathlib.Path(os.path.commonpath([str(p) for p in parents]))
+        except ValueError:
+            target = parents[0]
+        if target.parent == target:  # mixed drives/folders: common root is useless
+            target = parents[0]
+        text = str(target)
+        if text and text != self.save_dir_edit.text().strip():
+            self._suppress_save_dir_follow = True
+            try:
+                self.save_dir_edit.setText(text)
+            finally:
+                self._suppress_save_dir_follow = False
 
     def log_msg(self, msg):
         self.log_edit.log(msg)
@@ -602,8 +646,7 @@ class AutoLyricInterface(ScrollArea):
             )
             files = [file] if file else []
         if files:
-            if self.audio_list.add_paths(files):
-                self._maybe_follow_audio_dir(files)
+            self.audio_list.add_paths(files)
 
     def clear_audio_files(self):
         self.audio_list.clear_all()
