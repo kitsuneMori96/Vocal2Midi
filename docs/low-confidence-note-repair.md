@@ -34,21 +34,41 @@
 
 ### A. 输入契约扩展：stem-aware 多输入
 
-`PipelineConfig` 增加多路音频输入（stem 目录或多文件），三条通道各司其职：
+`PipelineConfig` 增加多路音频输入（stem 目录或多文件）。四路素材按「含人声的层级」排成一条链，一路都不能单独承担全部职责——每一路都有唯一合适的用途，也都有必须禁用的场景：
 
-| 通道 | 用途 | 信号 |
-| --- | --- | --- |
-| 识别通道 | ASR 文本 / phoneme、FA 谱图 | `recognition_mix = dry + α·harmony (+ β·original_vocal)`，α≈0.2–0.35（−14~−9 dB） |
-| 音高通道 | GAME、RMVPE | 干净 `dry`；仅在 dry 无音高且 mix 音高连续时局部回退 |
-| 导出 | USTX/VSQX/TXT | 时间轴不变，只是歌词与音高来源分离 |
+| 层级 | 素材 | 人声 recall | 边界精度 | 唯一合适的用途 | 禁用 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 原曲 mix | 最高（任何声音） | 最差 | 窗口内 mix 也到噪声底时一票否决 `genuine_rest`；全曲节拍参考 | F0（实测偏 500–1900 cent）、响度参照（inst ≈ mix，永远有能量）、精细边界 |
+| 2 | 带和声干声 | 高（含伴唱） | 差 | 存在性金标准；区分「主唱被剥离」与「伴唱 / 休止」 | 填词（伴唱可能唱不同词）、音高（三度/五度）、边界 |
+| 3 | 去和声干声（未去回声） | 中高 | 中 | 默认 ASR / FA / GAME / RMVPE 输入；修复取材首选 | 混响尾巴会在真休止处造出假浊音 |
+| 4 | 去和声 + 去回声干声 | 最低（会吃软音） | 最好 | 边界锐化、量化、`stripped_note` 的增益底子 | 单独当作「无人声」证据（实测吃掉 45 个空隙里的软音） |
 
-改动点：`inference/io/audio_io.py:58`（`load_audio`）、`inference/pipeline/auto_lyric_hybrid.py:190`（切片）、`inference/pipeline/lyric_alignment.py:264`（Stage 1/2 分流）。
+组合规则：
 
-风险：和声串扰会污染音高（常见三度/五度）。因此音高通道**坚持用 dry**，识别通道才引入 mix。单输入时全部退化为现行为，保持向后兼容。
+1. **休止**：层级 2 无浊音（mix 也到噪声底则更确定）→ `genuine_rest`，不修复、只参与对齐。
+2. **伴唱段**：层级 2 有音、层级 3 无音 → `harmony_only`，不为主唱补词。若层级 2 就是含伴唱的那一路，还要叠加 F0 一致性检查（≤35 cent），否则三度/五度的伴唱会被当成主唱缺音。
+3. **主唱缺音**：层级 3 有音、层级 4 静音或低 ≥8 dB → `stripped_note` / `low_gain`，取材层级 3。
+4. **边界**：优先层级 4；层级 4 静音处回退层级 3，并把该区间记为 region。
+5. **其余计数不一致** → `align_loss`，走 D。
+
+代价：层级 1 只算包络，层级 2 做参照时加一遍 RMVPE，完整 ASR / GAME 只在层级 3/4 上跑。四路在本样本上逐采样一致（339.4 s / 33939 帧），region 替换不需要重估时间轴；换歌必须先校验长度，RVC 输出可能有整体偏移。
+
+只有部分素材时按可用层级降级：
+
+| 可用 | 参照 | 边界 | 还能修 |
+| --- | --- | --- | --- |
+| 4 路 | 层级 2 | 层级 4（回退 3） | 全部 |
+| 缺层级 2 | 层级 3 | 层级 4 / 3 | 除 `harmony_only` 判别外全部 |
+| 只有 3 + 4 | 层级 3 | 层级 4 | 主唱缺音 + `align_loss`；休止判定受混响干扰，变粗 |
+| 只有层级 4（现状） | 无 | 层级 4 | 仅 `align_loss`；`low_gain` 修不了 |
+
+改动点：`inference/io/audio_io.py:58`（`load_audio`）、`inference/pipeline/auto_lyric_hybrid.py:190`（切片）、`inference/pipeline/lyric_alignment.py:264`（Stage 1/2 分流）。单输入时全部退化为现行为，保持向后兼容。
+
+只有拿不到层级 3 时，才退回旧的 `dry + α·harmony` 混合识别通道（α≈0.2–0.35）；有同源高电平 stem 时不需要混合，也不该用层级 2 提供音高。
 
 ### B. 断点 / 低置信区检测器（RepairRegion）
 
-输出结构：`RepairRegion[start, end, kind, confidence, evidence]`，`kind ∈ {stripped_note, low_gain, align_loss, genuine_rest, leakage}`。`align_loss` 是 §6.1 里的第二类：音频正常，丢在词↔note 配对。
+输出结构：`RepairRegion[start, end, kind, confidence, evidence]`，`kind ∈ {stripped_note, low_gain, align_loss, harmony_only, genuine_rest, leakage}`。`align_loss` 是 §6.1 里的第二类：音频正常，丢在词↔note 配对；`harmony_only` 是层级 2 有音但层级 3 无音，属于伴唱，不补主唱词。
 
 可用证据（多数已在管线内，成本很低）：
 
@@ -62,7 +82,7 @@
 判据（阈值取自 §6 的实测）：
 
 - **不能用「dry 自身 F0 连续」做证据**：RMVPE 对静音段会插值，实测在 −91 dBFS 的区间里仍能给出与参照 stem 相差 2–30 cent 的 F0，`voiced_fraction` 也只有 0.02–0.5。所以连续性必须**跨轨比对**才有意义。
-- 参照轨（去回声前的 Vocal stem）人声存在性：区间内 `voiced_fraction ≥ 0.10`。实测休止簇集中在 ≤0.07，残留簇从 0.13 起，中间是空的，所以 0.10 是一个干净的切口。
+- 参照轨（层级 2，缺失时用层级 3）人声存在性：区间内 `voiced_fraction ≥ 0.10`。实测休止簇集中在 ≤0.07，残留簇从 0.13 起，中间是空的，所以 0.10 是一个干净的切口。层级 2 含伴唱，判「主唱缺音」时还要过一遍 F0 一致性（≤35 cent），不一致的归 `harmony_only`。
 - 剥离性衰减：`drop = ref_dB − dry_dB ≥ 8 dB`（实测真断点的 drop 落在 12–55 dB）。
 - `stripped_note`（可只做增益复原）还要 dry 侧留音：`dry_voiced ≥ 0.5` 且与参照轨 F0 相差 `≤ 35 cent`。
 - 参照轨也无音（`voiced_fraction < 0.10`）→ `genuine_rest`，**不修复**，但要防止它被当作缺 mora 而触发左移。
@@ -79,6 +99,7 @@
   2. 次选用 mix 的对应片段重算（只在 Vocal stem 也不可用时；器乐会污染音高）；
   3. 局部增益复原只对 `stripped_note` 有效（dry 侧本就留音），限幅 +12 dB，段间 50–100 ms 交叉淡化（阶跃增益会在 FA 谱图上造出假边界）。对 drop > 40 dB 的区间，dry 已接近噪声底，放大只会放大噪声。
 - `genuine_rest`：保持原样，仅参与对齐；
+- `harmony_only`：不补主唱词；如需伴唱轨，另开一条时间轴相同的声部；
 - `leakage`：降权，不修复；
 - 兜底：region 内仍检不到 mora 而原词有对应音节 → 交给 D 做插位。
 
@@ -151,7 +172,7 @@
 
 ## 7. 待讨论
 
-1. 有同源高电平 stem 时还需要 mix 通道吗？§6 的结论是：分离链输出的 Vocal stem 已经够用，mix 只在「只有合成干声、拿不到上游 stem」时才有价值。α 的问题因此往后放。
+1. ~~有同源高电平 stem 时还需要 mix 通道吗？~~ 已定：需要，但只做「一票否决休止」和节拍参考；α 混合只在拿不到层级 3 时启用。
 2. 局部重算的扩窗策略：region 与 chunk 边界不对齐时如何取并、重叠区结果如何合并？
 3. ~~音高通道是否允许在 `stripped_note` 区临时采用 mix 的 F0？~~ 实测否：inst/mix 的 F0 与人声轨相差 500–1900 cent，器乐会带跑音高；改用 Vocal stem 的 F0（与 dry 同源、逐采样对齐）。
 4. 检测阈值按全曲统计自适应，还是暴露成 GUI 参数（“修复强度”）？§6 里 `voiced_fraction` 的 0.07 / 0.13 空档是在一首歌上量出来的，换歌（尤其是混响更长的样本）是否仍然分开，需要多几条样本再定。
