@@ -213,6 +213,25 @@ GAME 的 `onnx_runtime.infer_batch` 本身没有随机数，输入由确定性�
 
 效果：同一文件清洗后 687 → 429 mora，首句 `ながいかみをゆわいてかぜをかんじてみるの`，末句 `あるいてゆくの`。用 `--lyrics-file <lrc>` 开对照整首重跑：508 音符、`+~` 为 0；chunk_3 匹配回 `あのひとをおもってすこしだけふるえてる`（ASR 听成 `o o mo i o` 也不影响）。新增单测 `tests/test_lyric_matcher.py`。
 
+### 6.5 无声 `っ` 偷走下一音节歌词（2026-11-05 修复）
+
+现象：OpenUtau 在「あの人を想って」这一句的音素行报 `[error]`；该句歌词行显示为 `あ の ひ と お お お も お お っ て …`，`っ` 占了一个音符，其后每个音节都往前挪了一位。
+
+定位（逐 chunk 对比 `extract_vowel_boundaries` 的 chars / lyrics 与 `align_notes_to_words` 的输出）：
+
+1. 全曲 37 个 chunk 中，含 `cl`（っ）token 的 4 个（3/5/14/25）都满足「chars 比有声单元多 1」，其余 33 个两者相等。错位只发生在这些 chunk 内。
+2. 原因：`cl` 在 HFA 里是一个没有可唱元音的词，`extract_vowel_boundaries` 跳过它时不推进 `char_idx`。于是它的显示字（っ）没有被任何词取走，反而被下一个有声词（て）取走，其后每个词都吃到前一个词的假名，chunk 末尾的 る 被丢弃。实测 chunk_3 的歌词行：`… お | '' | お も い お | '' | '' | っ | て | す …`——っ 正好落在 て 的位置。
+3. 音素化报错：lyric=っ 的音符音素化后只有 `cl`，没有元音，OpenUtau 直接给 `[error]`。
+
+修复（`inference/API/game_api.py::extract_vowel_boundaries`）：无元音词仍然占住自己的显示字（只推进 `char_idx`，不写进 lyrics）。romaji 模式此前靠文本查找自愈，kana / 歌词对照模式是直接按下标取字，因此只有后者会错位；改成无条件推进后两种模式一致。
+
+验证：
+
+- chunk_3 歌词行变为 `あ の ひ と を お お も お て す こ し だ け ふ る え て る`，与 LRC 的「あの人を想って少しだけ震えてる」逐字对应（多出的 お 是同一音节内的延续音，`っ` 区间内的音唱前一元音）；chunk 末的 る 不再被丢弃。
+- 全曲 502 音符中 lyric=っ 的音符 **0** 个，`+~`/`-` 仍为 **0** 个，OpenUtau 里报 `[error]` 的音符不复存在。
+- 新增单测 `tests/test_game_api.py::test_extract_vowel_boundaries_ja_sokuon_consumes_its_display_char` 与 `test_sokuon_word_does_not_steal_the_next_lyric`。
+- 注：这次端到端验证跑在 CPU 上（DirectML 当时在同一节点连续三次抛 GPU 异常），502 与上一轮 GPU 的 508 音符不能直接比较（§6.2）。
+
 ## 7. 待讨论
 
 1. ~~有同源高电平 stem 时还需要 mix 通道吗？~~ 已定：需要，但只做「一票否决休止」和节拍参考；α 混合通道只在「只有带和声干声、没有去和声干声」时才有意义，属于不推荐路径。

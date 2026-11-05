@@ -272,6 +272,11 @@ def extract_vowel_boundaries(
 
         vowel_start = _find_word_nucleus_start(word, language)
         if vowel_start is None:
+            # A consonant-only token (ja 'cl' = っ) has a display char but no
+            # note of its own. Not consuming that char hands っ to the next
+            # voiced word and shifts every later lyric in the chunk by one.
+            if char_idx < len(original_chars):
+                char_idx += 1
             if word.end > last_end:
                 word_durs.append(word.end - last_end)
                 word_vuvs.append(0)

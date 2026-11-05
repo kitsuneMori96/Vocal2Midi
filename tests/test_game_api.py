@@ -93,6 +93,25 @@ def test_extract_vowel_boundaries_ja_uses_first_singable_nucleus():
     assert lyrics == ["", "か", "に"]
 
 
+def test_extract_vowel_boundaries_ja_sokuon_consumes_its_display_char():
+    words = [
+        _make_word(0.0, 0.30, "a", [(0.0, 0.30, "a")]),
+        _make_word(0.30, 0.40, "cl", [(0.30, 0.40, "cl")]),
+        _make_word(0.40, 0.70, "te", [(0.40, 0.45, "t"), (0.45, 0.70, "e")]),
+        _make_word(0.70, 1.00, "su", [(0.70, 0.75, "s"), (0.75, 1.00, "u")]),
+    ]
+
+    _durs, vuvs, lyrics, _vowels = extract_vowel_boundaries(
+        words, ["あ", "っ", "て", "す"], language="ja"
+    )
+
+    # っ belongs to the unvoiced 'cl' word; the following words keep their own
+    # kana instead of sliding one position left.
+    assert "っ" not in lyrics
+    assert lyrics == ["あ", "", "", "て", "す"]
+    assert vuvs == [1, 0, 0, 1, 1]
+
+
 def test_extract_vowel_boundaries_zh_does_not_use_coda_as_vowel_start():
     words = [
         _make_word(0.0, 0.30, "ang", [(0.0, 0.22, "a"), (0.22, 0.30, "ng")]),
@@ -265,6 +284,27 @@ def test_note_in_unvoiced_word_continues_previous_vowel(monkeypatch):
     assert [n.lyric for n in notes] == ["な", "あ", "が"]
     assert [round(n.onset, 3) for n in notes] == [0.30, 0.70, 0.90]
     assert [round(n.offset, 3) for n in notes] == [0.70, 0.90, 1.30]
+
+
+def test_sokuon_word_does_not_steal_the_next_lyric(monkeypatch):
+    words = [
+        _make_word(0.0, 0.40, "a", [(0.0, 0.40, "a")]),
+        _make_word(0.40, 0.50, "cl", [(0.40, 0.50, "cl")]),
+        _make_word(0.50, 0.90, "te", [(0.50, 0.55, "t"), (0.55, 0.90, "e")]),
+        _make_word(0.90, 1.30, "su", [(0.90, 0.95, "s"), (0.95, 1.30, "u")]),
+    ]
+
+    notes = _run_with_fake_game(
+        monkeypatch, words, ["あ", "っ", "て", "す"],
+        durations=[0.40, 0.10, 0.05, 0.40, 0.35],
+        presence=[1, 0, 0, 1, 1],
+        scores=[60, 0, 0, 62, 60],
+    )
+
+    # OpenUtau cannot phonemize a note whose lyric is っ; the sokuon word must
+    # stay unvoiced and leave て/す on their own notes.
+    assert [n.lyric for n in notes] == ["あ", "て", "す"]
+    assert [round(n.onset, 3) for n in notes] == [0.00, 0.55, 0.95]
 
 
 def test_unvoiced_word_note_after_phrase_gap_is_dropped(monkeypatch):
