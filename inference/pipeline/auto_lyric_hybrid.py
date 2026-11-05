@@ -27,7 +27,13 @@ from inference.API.game_api import (
 from inference.API.rmvpe_api import RmvpeTranscriber
 from inference.API.ustx_api import save_ustx
 from inference.API.vsqx_api import save_vsqx
-from inference.device_utils import normalize_runtime_device
+from inference.device_utils import (
+    cap_dml_batch_size,
+    format_gib,
+    local_video_memory_free_bytes,
+    normalize_runtime_device,
+    use_dml,
+)
 from inference.pipeline.lyric_alignment import (
     PINYIN_ASR_DEFAULT_DIR,
     PINYIN_ASR_LANGUAGE,
@@ -224,6 +230,27 @@ def _slice_chunks(
     return chunks
 
 
+def _clamp_game_batch_size(batch_size, chunks, sr, device):
+    """Keep the DirectML batch small enough for the VRAM left at GAME time."""
+    if batch_size <= 1 or not use_dml(device):
+        return batch_size
+    longest = max((len(chunk["waveform"]) / float(sr) for chunk in chunks), default=0.0)
+    free_bytes = local_video_memory_free_bytes()
+    capped = cap_dml_batch_size(
+        batch_size,
+        max_item_seconds=longest,
+        free_bytes=free_bytes,
+    )
+    if capped < batch_size:
+        free_text = format_gib(free_bytes) if free_bytes is not None else "unknown"
+        logger.warning(
+            f"[GAME] DirectML free VRAM {free_text} only fits batch {capped} "
+            f"(requested {batch_size}, longest chunk {longest:.1f}s); "
+            "lowering it to avoid a driver timeout."
+        )
+    return capped
+
+
 def _run_game_stage(
     chunks,
     sr,
@@ -255,6 +282,7 @@ def _run_game_stage(
     try:
         if cancel_checker and cancel_checker():
             raise InterruptedError("Task was cancelled")
+        batch_size = _clamp_game_batch_size(batch_size, chunks, sr, ctx.device)
         logger.info("--------------------------------------\n")
 
         if outcome is not None and outcome.aligned:

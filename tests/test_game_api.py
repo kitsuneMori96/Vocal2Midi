@@ -59,6 +59,32 @@ def test_no_lyrics_game_inference_error_is_not_swallowed():
         )
 
 
+class _CodepageErrorGameModel:
+    timestep = 0.01
+    provider_name = "dml"
+    samplerate = 44100
+
+    def infer_batch(self, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xb2", 0, 1, "invalid start byte")
+
+
+def test_undecodable_dml_failure_names_vram_and_driver_timeout():
+    # onnxruntime builds the DirectML error string with the system ANSI code
+    # page; the UTF-8 decode failure used to escape with no actionable text.
+    with pytest.raises(RuntimeError, match="out of memory"):
+        game_api._run_game_inference_batch(
+            game_model=_CodepageErrorGameModel(),
+            waveforms_np=[np.zeros(4410, dtype=np.float32)],
+            waveform_durations_np=[0.1],
+            known_durations_np=None,
+            seg_threshold=0.2,
+            seg_radius=0.02,
+            est_threshold=0.2,
+            ts=[0.0],
+            language="ja",
+        )
+
+
 def test_game_language_is_forced_empty_semantics():
     chunks = [{"waveform": np.zeros(32, dtype=np.float32), "offset": 0.0}]
     model = _CapturingGameModel()

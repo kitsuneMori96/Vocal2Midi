@@ -188,3 +188,32 @@ def test_romaji_create_session_uses_selected_dml_adapter(monkeypatch, tmp_path: 
     assert isinstance(session, _FakeSession)
     assert fake_ort.session_calls[0]["providers"][0] == ("DmlExecutionProvider", {"device_id": "3"})
     assert session.get_providers()[0] == "DmlExecutionProvider"
+
+
+def test_cap_dml_batch_size_fits_activations_into_free_vram():
+    # 10 s padded chunk costs 640 MiB with the margin; 2 GiB free minus the
+    # 768 MiB headroom leaves room for two of them.
+    assert device_utils.cap_dml_batch_size(
+        4, max_item_seconds=10.0, free_bytes=2 << 30
+    ) == 2
+
+
+def test_cap_dml_batch_size_keeps_request_without_budget():
+    assert device_utils.cap_dml_batch_size(
+        4, max_item_seconds=10.0, free_bytes=None
+    ) == 4
+
+
+def test_cap_dml_batch_size_never_drops_below_one():
+    assert device_utils.cap_dml_batch_size(
+        4, max_item_seconds=10.0, free_bytes=100 << 20
+    ) == 1
+    assert device_utils.cap_dml_batch_size(
+        1, max_item_seconds=10.0, free_bytes=100 << 20
+    ) == 1
+
+
+def test_cap_dml_batch_size_keeps_small_request_when_vram_is_ample():
+    assert device_utils.cap_dml_batch_size(
+        4, max_item_seconds=10.0, free_bytes=16 << 30
+    ) == 4

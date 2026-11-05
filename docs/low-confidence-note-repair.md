@@ -252,6 +252,26 @@ GAME 的 `onnx_runtime.infer_batch` 本身没有随机数，输入由确定性�
 - 新增单测 `tests/test_game_api.py::test_lyricless_blip_after_pause_does_not_prepend_previous_vowel`（跨 chunk 复现 など→お→ない）。
 - 注：`--batch-size 4` 的 DML 本轮在 encoder 节点抛 `UnicodeDecodeError`（onnxruntime 解码 GPU 错误信息失败），`batch-size 1` 可跑通。
 
+### 6.7 DML 批次撑爆显存 + 错误信息不可读（2026-11-05 修复）
+
+现象：headless CLI 用 `--device dml --batch-size 4` 时，GAME 在 encoder 节点抛 `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb2 in position 241`；同一台机器上 GUI 从不报错。
+
+根因两条：
+
+1. **显存打到驱动超时**：GTX 1660 Ti（5.8 GiB dedicated）上 `--batch-size 1` 峰值 3606 MiB，`--batch-size 4` 峰值 5855 MiB，几乎占满；失败时刻与 Windows 事件日志里 `nvlddmkm` Id 153（TDR，驱动重置）时间对齐。GUI 侧 `apply_batch_defaults(batch=1)`，所以从未踩到。
+2. **真实错误被吞**：onnxruntime 用系统 ANSI 代码页（本机 GBK）构造 DML 失败信息，再按 UTF-8 解码，于是显存不足/驱动超时只剩下一句无意义的解码错误。
+
+修复：
+
+- `inference/device_utils.py`：用 DXGI 查实际空闲显存——`IDXGIFactory1::EnumAdapters1` → QI `IDXGIAdapter3`（IID `645967A4-1392-4310-A798-8053CE3E93FD`）→ `QueryVideoMemoryInfo(vtable 14, NodeIndex=0, LOCAL)`。取 `min(Budget, DedicatedVideoMemory) − CurrentUsage`：DXGI 的 budget 会大于物理显存，直接用它估算等于允许分配溢出到共享内存，那才是卡住驱动的原因。
+- `cap_dml_batch_size()`：按实测激活增长率（约 75 MiB/被 padding 的秒，10 s 项 ≈ 750 MiB）取 64 MiB/s，再留 768 MiB 余量，反推「当前空闲还能跑几个」；未知显存时保持用户请求不变。
+- `inference/pipeline/auto_lyric_hybrid.py::_clamp_game_batch_size`：GAME 模型加载完、真正推理前调用，用本批最长 chunk 估算并下调 batch，同时打印 `[GAME] DirectML free VRAM … only fits batch N (requested M, longest chunk Xs)`。批次是顺序切分的，按全曲最长 chunk 估是保守上界。
+- `inference/API/game_api.py`：`infer_batch` 抛 `UnicodeDecodeError` 时改抛带解释的 `RuntimeError`（显存不足 / 驱动超时 / 建议 batch 1），不再让解码错误直接冒泡。
+
+验证：同一文件、同参数 `--batch-size 4` 重跑，日志出现上述 warning（本机管线内 RMVPE/TiFA 会话常驻后，空闲显存不够两个 19.8 s 项，压到 batch 1），整首跑通、exit 0、488 音符、`っ` 0、`+~` 0；旧版本同一命令在 encoder 直接失败。单独进程只加载 GAME 会话时 DXGI 读到 4.88 GiB（DML 延迟分配，加载本身几乎不占）。新增单测 `tests/test_device_selection.py` 四个 cap 用例与 `tests/test_game_api.py::test_undecodable_dml_failure_names_vram_and_driver_timeout`。
+
+注意：`_enumerate_dxgi_adapters` 的 lru_cache 只缓存适配器列表，空闲显存每次现查，否则 GAME 阶段会拿到 RMVPE 运行前的旧值。
+
 ## 7. 待讨论
 
 1. ~~有同源高电平 stem 时还需要 mix 通道吗？~~ 已定：需要，但只做「一票否决休止」和节拍参考；α 混合通道只在「只有带和声干声、没有去和声干声」时才有意义，属于不推荐路径。

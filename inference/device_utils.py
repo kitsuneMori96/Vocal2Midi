@@ -73,6 +73,23 @@ _IID_IDXGIFactory1 = _GUID(
     (ctypes.c_ubyte * 8)(0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87),
 )
 
+_IID_IDXGIAdapter3 = _GUID(
+    0x645967A4,
+    0x1392,
+    0x4310,
+    (ctypes.c_ubyte * 8)(0xA7, 0x98, 0x80, 0x53, 0xCE, 0x3E, 0x93, 0xFD),
+)
+DXGI_MEMORY_SEGMENT_GROUP_LOCAL = 0
+
+
+class _DXGI_QUERY_VIDEO_MEMORY_INFO(ctypes.Structure):
+    _fields_ = [
+        ("Budget", ctypes.c_uint64),
+        ("CurrentUsage", ctypes.c_uint64),
+        ("AvailableForReservation", ctypes.c_uint64),
+        ("CurrentReservation", ctypes.c_uint64),
+    ]
+
 
 def default_runtime_device() -> str:
     """Return the accelerated backend only where DirectML is available."""
@@ -194,6 +211,121 @@ def select_preferred_gpu_adapter(
 
 def _select_preferred_dml_adapter() -> DxgiAdapterInfo | None:
     return select_preferred_gpu_adapter(MIN_GPU_DEDICATED_VRAM_BYTES)
+
+
+def local_video_memory_free_bytes() -> int | None:
+    """Free bytes in the preferred GPU's local DXGI memory segment.
+
+    IDXGIAdapter3::QueryVideoMemoryInfo reports the OS-enforced budget rather
+    than the adapter's nominal size, so memory held by other applications and
+    by ONNX sessions already loaded in this process is subtracted. Returns None
+    when the budget cannot be read (non-Windows, older DXGI, query failure).
+    """
+    preferred = _select_preferred_dml_adapter()
+    if preferred is None or not hasattr(ctypes, "WinDLL"):
+        return None
+    try:
+        dxgi = ctypes.WinDLL("dxgi")
+    except OSError:
+        return None
+
+    create_factory = dxgi.CreateDXGIFactory1
+    create_factory.argtypes = [ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p)]
+    create_factory.restype = ctypes.c_long
+
+    factory = ctypes.c_void_p()
+    try:
+        hr = create_factory(ctypes.byref(_IID_IDXGIFactory1), ctypes.byref(factory))
+        if hr < 0 or not factory.value:
+            return None
+        adapter = ctypes.c_void_p()
+        hr = _call_com_method(
+            factory,
+            12,
+            ctypes.c_long,
+            [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
+            factory,
+            preferred.index,
+            ctypes.byref(adapter),
+        )
+        if hr < 0 or not adapter.value:
+            return None
+        try:
+            adapter3 = ctypes.c_void_p()
+            hr = _call_com_method(
+                adapter,
+                0,
+                ctypes.c_long,
+                [ctypes.c_void_p, ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p)],
+                adapter,
+                ctypes.byref(_IID_IDXGIAdapter3),
+                ctypes.byref(adapter3),
+            )
+            if hr < 0 or not adapter3.value:
+                return None
+            try:
+                info = _DXGI_QUERY_VIDEO_MEMORY_INFO()
+                hr = _call_com_method(
+                    adapter3,
+                    14,
+                    ctypes.c_long,
+                    [
+                        ctypes.c_void_p,
+                        ctypes.c_uint32,
+                        ctypes.c_uint32,
+                        ctypes.POINTER(_DXGI_QUERY_VIDEO_MEMORY_INFO),
+                    ],
+                    adapter3,
+                    0,
+                    DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+                    ctypes.byref(info),
+                )
+                if hr < 0:
+                    return None
+                # The DXGI budget may exceed the physical dedicated VRAM and let
+                # an allocation spill into slow shared memory, which is what
+                # stalls the kernel long enough for a driver reset.
+                free = int(info.Budget) - int(info.CurrentUsage)
+                free = min(free, preferred.dedicated_vram_bytes - int(info.CurrentUsage))
+                return max(0, free)
+            finally:
+                _release_com(adapter3)
+        finally:
+            _release_com(adapter)
+    except Exception:
+        return None
+    finally:
+        _release_com(factory)
+
+
+# Measured on a 5.8 GiB DirectML adapter: GAME activations grow by roughly
+# 75 MiB per padded second (one 10 s item costs ~750 MiB). 64 MiB/s
+# under-estimates by ~2 s worth of activations for a 10 s item, which the
+# headroom below then absorbs together with the kernel workspaces.
+DML_BATCH_ACTIVATION_BYTES_PER_SEC = 64 << 20
+DML_BATCH_HEADROOM_BYTES = 768 << 20
+
+
+def cap_dml_batch_size(
+    requested: int,
+    *,
+    max_item_seconds: float,
+    free_bytes: int | None,
+) -> int:
+    """Shrink a DirectML batch until its activations fit the free VRAM.
+
+    Filling the adapter makes a kernel stall long enough for Windows to reset
+    the driver mid-run; the DirectML failure then surfaces with an unreadable
+    message. None free_bytes means the budget is unknown, so keep the request.
+    """
+    requested = max(1, int(requested))
+    if requested <= 1 or free_bytes is None or max_item_seconds <= 0:
+        return requested
+    per_item = DML_BATCH_ACTIVATION_BYTES_PER_SEC * float(max_item_seconds)
+    spare = int(free_bytes) - DML_BATCH_HEADROOM_BYTES
+    if spare <= 0:
+        return 1
+    return max(1, min(requested, int(spare // per_item)))
 
 
 def resolve_onnx_providers(device: str | None, *, label: str = "ONNX") -> tuple[str, list[ProviderSpec]]:

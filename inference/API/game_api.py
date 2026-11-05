@@ -356,16 +356,28 @@ def _run_game_inference_batch(
         padded_kd = pad_1d_arrays(known_durations_np, pad_value=0.0).astype(np.float32, copy=False)
 
     boundary_radius = int(round(seg_radius / game_model.timestep))
-    return game_model.infer_batch(
-        waveforms=padded_wavs,
-        durations=np.asarray(waveform_durations_np, dtype=np.float32),
-        known_durations=padded_kd,
-        boundary_threshold=float(seg_threshold),
-        boundary_radius=boundary_radius,
-        score_threshold=float(est_threshold),
-        language=_resolve_game_language_id(game_model, language),
-        ts=_normalize_ts(ts),
-    )
+    try:
+        return game_model.infer_batch(
+            waveforms=padded_wavs,
+            durations=np.asarray(waveform_durations_np, dtype=np.float32),
+            known_durations=padded_kd,
+            boundary_threshold=float(seg_threshold),
+            boundary_radius=boundary_radius,
+            score_threshold=float(est_threshold),
+            language=_resolve_game_language_id(game_model, language),
+            ts=_normalize_ts(ts),
+        )
+    except UnicodeDecodeError as exc:
+        # onnxruntime formats the DirectML failure message with the system
+        # ANSI code page; decoding it as UTF-8 fails and hides the real error,
+        # which on this path is almost always a driver timeout from low VRAM.
+        raise RuntimeError(
+            f"GAME ONNX inference failed on {game_model.provider_name} with an "
+            "undecodable driver message (the system code page is not UTF-8). "
+            "This usually means the GPU ran out of memory or its driver timed "
+            f"out; retry with batch size 1 (requested {len(waveforms_np)}, "
+            f"padded to {padded_wavs.shape[1] / game_model.samplerate:.1f}s each)."
+        ) from exc
 
 
 # Melisma tails are filled with the unit's nucleus vowel as kana
