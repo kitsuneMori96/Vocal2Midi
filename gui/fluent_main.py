@@ -112,20 +112,41 @@ class _FluentMainWindow(FluentWindow):
         avail = self._available_geometry()
         if avail is None:
             return
-        geo = self.frameGeometry()
-        if not avail.intersects(geo):
-            self.resize(
-                min(self.width(), avail.width()),
-                min(self.height(), avail.height()),
-            )
+        frame = self.frameGeometry()
+        # resize() takes the client size: subtract the title bar and borders,
+        # otherwise the frame stays wider than the screen and the opposite
+        # edge is still cut off.
+        deco_w = max(0, frame.width() - self.width())
+        deco_h = max(0, frame.height() - self.height())
+        max_w = max(self.minimumWidth(), avail.width() - deco_w)
+        max_h = max(self.minimumHeight(), avail.height() - deco_h)
+        width = min(self.width(), max_w)
+        height = min(self.height(), max_h)
+        if (width, height) != (self.width(), self.height()):
+            self.resize(width, height)
+            frame = self.frameGeometry()
+        if not avail.intersects(frame):
             self._center_on_available_screen()
             return
-        x = min(max(geo.x(), avail.left()), avail.right() - geo.width() + 1)
-        y = min(max(geo.y(), avail.top()), avail.bottom() - geo.height() + 1)
-        self.move(x, y)
+        x = min(max(frame.x(), avail.left()), avail.right() - frame.width() + 1)
+        y = min(max(frame.y(), avail.top()), avail.bottom() - frame.height() + 1)
+        if (x, y) != (frame.x(), frame.y()):
+            self.move(x, y)
+
+    def _screen_for_geometry(self):
+        """Screen the window actually lives on.
+
+        Before show() Qt answers with the primary screen for ``self.screen()``,
+        so a geometry restored onto a secondary monitor would be clamped
+        against the wrong screen.  Ask which screen contains it instead.
+        """
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = self.screen() or QApplication.primaryScreen()
+        return screen
 
     def _available_geometry(self):
-        screen = self.screen() or QApplication.primaryScreen()
+        screen = self._screen_for_geometry()
         return screen.availableGeometry() if screen is not None else None
 
     def _load_theme(self):
@@ -155,33 +176,41 @@ class _FluentMainWindow(FluentWindow):
         self.stackedWidget.setCurrentWidget(self.autoLyricInterface)
 
     def closeEvent(self, event):
-        self.app_settings.setValue("main_geometry", self.saveGeometry())
-        self.app_settings.setValue("main_maximized", self.isMaximized())
         # Destroying a running QThread crashes at exit ("QThread: Destroyed
         # while thread is still running"); stop the worker first.
-        if not self.autoLyricInterface.is_running():
-            event.accept()
+        if self.autoLyricInterface.is_running():
+            answer = QMessageBox.question(
+                self,
+                tr("close_running_title"),
+                tr("close_running_body"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            self.autoLyricInterface.request_stop()
+            if not self.autoLyricInterface.wait_for_worker(5000):
+                # Cancellation is cooperative and the worker can sit in an
+                # uninterruptible call (ffmpeg decode allows up to 10 minutes),
+                # so hide the window and finish closing once the thread
+                # settles.  Save now, while the window still holds its real
+                # geometry: the deferred close() runs on a hidden window.
+                self._persist_window_state()
+                self.hide()
+                self.autoLyricInterface.on_worker_settled(self.close)
+                event.ignore()
+                return
+        self._persist_window_state()
+        event.accept()
+
+    def _persist_window_state(self):
+        """Write the session geometry exactly once, only on a real exit."""
+        if getattr(self, "_window_state_saved", False):
             return
-        answer = QMessageBox.question(
-            self,
-            tr("close_running_title"),
-            tr("close_running_body"),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            event.ignore()
-            return
-        self.autoLyricInterface.request_stop()
-        if self.autoLyricInterface.wait_for_worker(5000):
-            event.accept()
-            return
-        # Cancellation is cooperative and the worker can sit in an
-        # uninterruptible call (ffmpeg decode allows up to 10 minutes), so hide
-        # the window and finish closing once the thread actually settles.
-        self.hide()
-        self.autoLyricInterface.on_worker_settled(self.close)
-        event.ignore()
+        self._window_state_saved = True
+        self.app_settings.setValue("main_geometry", self.saveGeometry())
+        self.app_settings.setValue("main_maximized", self.isMaximized())
 
 
 def run_app():

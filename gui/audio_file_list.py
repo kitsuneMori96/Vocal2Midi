@@ -17,6 +17,7 @@ class AudioFileList(ListWidget):
     AUDIO_EXTENSIONS = {".wav", ".m4a", ".flac", ".mp3", ".ogg", ".opus", ".wma", ".webm", ".aif", ".aiff"}
 
     filesAdded = Signal(int)  # number of newly added files
+    pathsAdded = Signal(list)  # paths actually accepted, in insertion order
     filesChanged = Signal()  # any add/remove/clear; drives batch mode
     settingsRequested = Signal(str)  # per-file settings button clicked
 
@@ -65,23 +66,25 @@ class AudioFileList(ListWidget):
             self._attach_gear_row(target)
             self._update_gear_visibility()
             self.filesAdded.emit(1)
+            self.pathsAdded.emit([target])
             self.filesChanged.emit()
             return 1
 
         existing = {self.item_path(self.item(i)) for i in range(self.count())}
-        added = 0
+        added_paths: list[str] = []
         for path in valid_paths:
             if path in existing:
                 continue
             self.addItem(path)
             self._attach_gear_row(path)
             existing.add(path)
-            added += 1
+            added_paths.append(path)
         self._update_gear_visibility()
-        if added:
-            self.filesAdded.emit(added)
+        if added_paths:
+            self.filesAdded.emit(len(added_paths))
+            self.pathsAdded.emit(added_paths)
             self.filesChanged.emit()
-        return added
+        return len(added_paths)
 
     def clear_all(self):
         self.file_settings.clear()

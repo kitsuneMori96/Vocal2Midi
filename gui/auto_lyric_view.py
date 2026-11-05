@@ -94,7 +94,9 @@ class AutoLyricInterface(ScrollArea):
         self.vBoxLayout.addWidget(audio_card)
         self.setAcceptDrops(True)
         self._is_running = False
+        self._last_added_dir: pathlib.Path | None = None
         self.audio_list.filesAdded.connect(lambda n: self.log_msg(tr("files_added", n=n)))
+        self.audio_list.pathsAdded.connect(self._on_audio_paths_added)
         self.audio_list.filesChanged.connect(self._on_audio_files_changed)
         self.audio_list.settingsRequested.connect(self._open_file_settings)
         if self.global_settings is not None:
@@ -491,6 +493,17 @@ class AutoLyricInterface(ScrollArea):
 
     def _on_audio_files_changed(self):
         self._update_batch_mode()
+
+    def _on_audio_paths_added(self, paths) -> None:
+        """Remember the folder of the newest file and follow it.
+
+        Only additions move the save dir here: removing a row leaves the
+        folder alone.  Clearing the list resets it to the default output dir
+        (see ``clear_audio_files``), because the folder being followed is gone.
+        """
+        if not paths:
+            return
+        self._last_added_dir = pathlib.Path(str(paths[-1])).expanduser().parent
         self._follow_audio_dir()
 
     def _on_save_dir_text_changed(self, text: str):
@@ -511,21 +524,25 @@ class AutoLyricInterface(ScrollArea):
         if checked:
             self._follow_audio_dir()
 
+    def _follow_target_dir(self) -> pathlib.Path | None:
+        """Folder to follow: the most recent addition, else the last row."""
+        if self._last_added_dir is not None:
+            return self._last_added_dir
+        paths = self.audio_list.all_paths()
+        if not paths:
+            return None
+        # Turning the switch back on after a restart has no "last added" yet;
+        # the newest row is the closest thing to it.
+        return pathlib.Path(str(paths[-1])).expanduser().parent
+
     def _follow_audio_dir(self) -> None:
-        """Point the save dir at the audio folder(s) while follow mode is on."""
+        """Point the save dir at the most recently added audio folder."""
         switch = getattr(self, "follow_dir_switch", None)
         if switch is None or not switch.isChecked():
             return
-        paths = self.audio_list.all_paths()
-        if not paths:
+        target = self._follow_target_dir()
+        if target is None:
             return
-        parents = [pathlib.Path(p).expanduser().parent for p in paths]
-        try:
-            target = pathlib.Path(os.path.commonpath([str(p) for p in parents]))
-        except ValueError:
-            target = parents[0]
-        if target.parent == target:  # mixed drives/folders: common root is useless
-            target = parents[0]
         text = str(target)
         if text and text != self.save_dir_edit.text().strip():
             self._suppress_save_dir_follow = True
@@ -756,20 +773,57 @@ class AutoLyricInterface(ScrollArea):
             batch_enabled = self.global_settings.enable_batch_mode()
 
         filter_str = "Audio Files (*.wav *.m4a *.flac *.mp3 *.ogg *.opus *.wma *.webm *.aif *.aiff)"
+        start_dir = self._dialog_start_dir()
         if batch_enabled:
             files, _ = QFileDialog.getOpenFileNames(
-                self, tr("pick_files_dialog"), "", filter_str
+                self, tr("pick_files_dialog"), start_dir, filter_str
             )
         else:
             file, _ = QFileDialog.getOpenFileName(
-                self, tr("pick_files_dialog"), "", filter_str
+                self, tr("pick_files_dialog"), start_dir, filter_str
             )
             files = [file] if file else []
         if files:
             self.audio_list.add_paths(files)
 
+    def _dialog_start_dir(self) -> str:
+        """Open the picker where the user last was, not at an empty path.
+
+        Follow mode means the audio folder is the working location; with it
+        off the save dir was chosen by hand, so that is the better start.
+        """
+        switch = getattr(self, "follow_dir_switch", None)
+        following = switch is not None and switch.isChecked()
+        candidates = []
+        if following:
+            candidates.append(self._follow_target_dir())
+        current = self.save_dir_edit.text().strip()
+        if current:
+            candidates.append(pathlib.Path(current).expanduser())
+        if not following:
+            candidates.append(self._follow_target_dir())
+        for target in candidates:
+            if target is not None and target.is_dir():
+                return str(target)
+        return ""
+
     def clear_audio_files(self):
+        """Clear the list; with follow mode on the save dir returns to default."""
+        had_files = self.audio_list.count() > 0
         self.audio_list.clear_all()
+        self._last_added_dir = None
+        if not had_files:
+            return
+        switch = getattr(self, "follow_dir_switch", None)
+        if switch is None or not switch.isChecked():
+            return
+        target = str(default_output_dir(getattr(self.global_settings, "project_root", None)))
+        if target != self.save_dir_edit.text().strip():
+            self._suppress_save_dir_follow = True
+            try:
+                self.save_dir_edit.setText(target)
+            finally:
+                self._suppress_save_dir_follow = False
 
     def _update_batch_mode(self):
         """Single file keeps the panels; more than one file in the list enters
