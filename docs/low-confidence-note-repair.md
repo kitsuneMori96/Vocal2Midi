@@ -201,6 +201,18 @@ GAME 的 `onnx_runtime.infer_batch` 本身没有随机数，输入由确定性�
 
 验证：同一首、同参数重跑，音符 511 → 505（丢掉 6 个乐句开头孤立音），`+~` 26 → **0**；乐句开头恢复为真实歌词（30.41 な、37.05 ま、154.57 む、217.86 こ），句中无元音词内的音改唱前一元音（51.54 お、67.52 あ、263.30 あ）。新增单测 `tests/test_game_api.py::test_note_in_unvoiced_word_continues_previous_vowel` 与 `test_unvoiced_word_note_after_phrase_gap_is_dropped`。
 
+### 6.4 歌词对照直接吃 LRC（2026-11-05 修复）
+
+此前 `--lyrics-file` / GUI 歌词框只按纯文本处理。把 `月夜の君と空の上 - 風華.lrc` 原样交给 `JaG2p` 时，`[ti:…] [ar:…] [al:…]` 的标题/歌手/专辑名全部进了参考歌词表（实测 687 个 mora，前 40 个是 `t i つ き よ の き み と そ ら の う え a r ふ う か …`），`[00:07.700]词：KAB.` 这类制作信息也被当作歌词，对照从第一个 chunk 起就整体偏移。
+
+修复（`inference/LyricFA/tools/lyric_matcher.py::strip_lrc_markup`，在 `process_lyric_text` 入口调用）：
+
+- 识别到 `[mm:ss.xx]` 时间戳才按 LRC 处理，纯文本原样返回；
+- 去掉 `[ti/ar/al/by/offset/…]` 元信息行、行内/多段时间戳；
+- 去掉 `词：/曲：/编曲：/作詞：/artist - title` 这类非演唱行（`[ti] - [ar]` 精确匹配，其余按常见前缀）。
+
+效果：同一文件清洗后 687 → 429 mora，首句 `ながいかみをゆわいてかぜをかんじてみるの`，末句 `あるいてゆくの`。用 `--lyrics-file <lrc>` 开对照整首重跑：508 音符、`+~` 为 0；chunk_3 匹配回 `あのひとをおもってすこしだけふるえてる`（ASR 听成 `o o mo i o` 也不影响）。新增单测 `tests/test_lyric_matcher.py`。
+
 ## 7. 待讨论
 
 1. ~~有同源高电平 stem 时还需要 mix 通道吗？~~ 已定：需要，但只做「一票否决休止」和节拍参考；α 混合通道只在「只有带和声干声、没有去和声干声」时才有意义，属于不推荐路径。

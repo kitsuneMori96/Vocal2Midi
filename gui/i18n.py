@@ -35,8 +35,8 @@ _STRINGS: dict[str, dict[str, str]] = {
     "clear_files": {"zh": "清空选择", "en": "Clear"},
     "ref_lyrics": {"zh": "参考歌词 (可选)", "en": "Reference Lyrics (Optional)"},
     "ref_lyrics_hint": {
-        "zh": "如果有确切的歌词，请在此输入（纯文本）以提高对齐准确率...",
-        "en": "Enter exact lyrics here (plain text) to improve alignment...",
+        "zh": "如果有确切的歌词，请在此输入纯文本或 LRC（时间戳/元信息会被忽略）以提高对齐准确率...",
+        "en": "Enter exact lyrics (plain text or LRC; timestamps/metadata are ignored) to improve alignment...",
     },
     "slicing_method": {"zh": "音频切片方法", "en": "Slicing"},
     "slice_smart": {"zh": "智能切片", "en": "Smart"},

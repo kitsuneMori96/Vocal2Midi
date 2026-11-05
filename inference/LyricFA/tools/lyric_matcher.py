@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -9,6 +10,55 @@ from .sequence_aligner import SequenceAligner, calculate_difference_count, Smart
 import logging
 
 logger = logging.getLogger(__name__)
+
+_LRC_TIMESTAMP_RE = re.compile(r"\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]")
+_LRC_METADATA_RE = re.compile(
+    r"^\s*\[(ti|ar|al|by|offset|re|ve|length|au|tool|encoding):([^\]]*)\]\s*$",
+    re.IGNORECASE,
+)
+# Credit lines ("词：…", "作曲：…") are not sung; matching them as lyrics
+# shifts the reference list before the first real line.
+_LRC_CREDIT_RE = re.compile(
+    r"^\s*(?:作词|作曲|编曲|词曲|词|曲|歌|演唱|原唱|翻唱|和声|混音|母带|制作人|制作|策划|出品|录音|配唱|监制"
+    r"|作詞|編曲|歌手|唄)(?:\s*[:：]|\s+by\b)",
+    re.IGNORECASE,
+)
+
+
+def strip_lrc_markup(raw_text: str) -> str:
+    """Drop LRC timestamps and metadata so only lyric lines remain.
+
+    A pasted .lrc carries [ti:]/[ar:] values that would otherwise be matched
+    as lyrics; timestamps are irrelevant because alignment uses ASR timing.
+    """
+    raw_text = raw_text.lstrip("\ufeff")
+    if not _LRC_TIMESTAMP_RE.search(raw_text):
+        return raw_text
+
+    metadata = {}
+    for line in raw_text.splitlines():
+        match = _LRC_METADATA_RE.match(line)
+        if match:
+            metadata[match.group(1).lower()] = match.group(2).strip()
+
+    header = {
+        text for text in (
+            metadata.get("ti", ""),
+            metadata.get("ar", ""),
+            metadata.get("al", ""),
+            f"{metadata.get('ti', '')} - {metadata.get('ar', '')}".strip(" -"),
+        ) if text
+    }
+
+    lines = []
+    for line in raw_text.splitlines():
+        if _LRC_METADATA_RE.match(line):
+            continue
+        line = _LRC_TIMESTAMP_RE.sub("", line).strip()
+        if not line or line in header or _LRC_CREDIT_RE.match(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 @dataclass
@@ -38,7 +88,7 @@ class LyricMatcher:
         return self.process_lyric_text(raw_text)
 
     def process_lyric_text(self, raw_text: str) -> LyricData:
-        cleaned_text = self.processor.clean_text(raw_text)
+        cleaned_text = self.processor.clean_text(strip_lrc_markup(raw_text))
         build_reference_lyric = getattr(self.processor, "build_reference_lyric", None)
         if callable(build_reference_lyric):
             text_list, phonetic_list = build_reference_lyric(cleaned_text)

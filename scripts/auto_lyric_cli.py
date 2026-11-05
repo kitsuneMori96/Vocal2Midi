@@ -157,7 +157,8 @@ def build_argparser(defaults: dict) -> argparse.ArgumentParser:
                         help="Forced-alignment engine (default: the GUI setting, tifa)")
     parser.add_argument("--lyrics", default="", help="Reference lyrics text for alignment")
     parser.add_argument("--lyrics-file", type=Path, default=None,
-                        help="Read reference lyrics from a UTF-8 text file (overrides --lyrics)")
+                        help="Read reference lyrics from a UTF-8 text file, plain or .lrc "
+                             "(timestamps/metadata are stripped; overrides --lyrics)")
     parser.add_argument("--no-lyrics", action="store_true",
                         help="Skip ASR/HFA and extract pitch only (no lyrics in outputs)")
     parser.add_argument("--slicing", choices=("smart", "heuristic", "default", "grid"), default="smart",
