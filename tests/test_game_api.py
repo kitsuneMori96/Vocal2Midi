@@ -326,6 +326,55 @@ def test_unvoiced_word_note_after_phrase_gap_is_dropped(monkeypatch):
     assert notes[-1].onset == pytest.approx(2.00)
 
 
+def test_lyricless_blip_after_pause_does_not_prepend_previous_vowel(monkeypatch):
+    # Measured on 月夜の君と空の上: 「など」 ends the previous chunk at 169.46s,
+    # GAME reports a 0.06s note at 169.92s inside the pause, and 「ない」 starts
+    # at 169.98s. Filling that blip with ど's o put an お right before な.
+    chunks = [
+        {"waveform": np.zeros(16000, dtype=np.float32), "offset": 0.0},
+        {"waveform": np.zeros(16000, dtype=np.float32), "offset": 1.10},
+    ]
+    monkeypatch.setattr(
+        game_api,
+        "_run_game_inference_batch",
+        lambda **kwargs: [
+            (
+                np.asarray([0.71], dtype=np.float32),
+                np.asarray([1], dtype=np.int64),
+                np.asarray([58.0], dtype=np.float32),
+            ),
+            (
+                np.asarray([0.14, 0.06, 0.14], dtype=np.float32),
+                np.asarray([0, 1, 1], dtype=np.int64),
+                np.asarray([0.0, 58.0, 58.0], dtype=np.float32),
+            ),
+        ],
+    )
+    notes, _ = extract_pitches_and_align(
+        chunks,
+        sr=16000,
+        pred_dict={
+            "chunk_0": (None, None, [_make_word(0.0, 0.71, "o", [(0.0, 0.71, "o")])]),
+            "chunk_1": (None, None, [
+                _make_word(0.0, 0.20, "SP", []),
+                _make_word(0.20, 0.34, "a", [(0.20, 0.34, "a")]),
+            ]),
+        },
+        chars_dict={"chunk_0": ["ど"], "chunk_1": ["な"]},
+        game_model=_DummyGameModel(),
+        ts=[0.0],
+        seg_threshold=0.2,
+        seg_radius=0.02,
+        est_threshold=0.2,
+        batch_size=2,
+        language="ja",
+        lyric_output_mode="kana",
+    )
+
+    assert [n.lyric for n in notes] == ["ど", "な"]
+    assert [round(n.onset, 3) for n in notes] == [0.0, 1.30]
+
+
 # Real GAME output for 月夜の君と空の上 110.17-111.22s: the sustained 「イ」 tail
 # of 「に」 wobbles and the model shredded it into six short fragments.
 def test_collapse_vibrato_tails_absorbs_measured_phrase_final_vibrato():

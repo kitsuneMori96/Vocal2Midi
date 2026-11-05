@@ -232,6 +232,26 @@ GAME 的 `onnx_runtime.infer_batch` 本身没有随机数，输入由确定性�
 - 新增单测 `tests/test_game_api.py::test_extract_vowel_boundaries_ja_sokuon_consumes_its_display_char` 与 `test_sokuon_word_does_not_steal_the_next_lyric`。
 - 注：这次端到端验证跑在 CPU 上（DirectML 当时在同一节点连续三次抛 GPU 异常），502 与上一轮 GPU 的 508 音符不能直接比较（§6.2）。
 
+### 6.6 换气后的碎片音被填成前一个音节的尾元音（2026-11-05 修复）
+
+现象：OpenUtau 里下一句/下一个词的开头会多出一个前一句的尾元音。用户截图的 `などない` 处：长音 ど（A#3，0.71s）后面跟一个 0.06s 的 A#3 音符，歌词 お，紧贴着后面的 な。类似位置还有「花のように」的 つ→よ 前多出的 う、「月夜」同款、`く→ゆ`、`る→だ` 等，旧文件里共 6 处。
+
+定位（chunk 18 的单元表，`align_notes_to_words` 逐单元输出）：
+
+1. 「など」结束于 chunk 17 末尾（168.75–169.46s）；chunk 18 以 SPI/换气开头，第一个 0.06s 单元 vuv=0，GAME 在这个静音里报了一个 0.06s 的 A#3 碎片，紧接 ない 的 な。
+2. 该碎片所在的单元没有歌词、没有元音，走 `extract_pitches_and_align` 的兜底分支：只要距上一个音符 ≤ `VIBRATO_PHRASE_GAP_SEC = 0.60`，就用 `_continuation_lyric(prev_note.lyric)` 填上 ど 的元音 お。0.46s 的换气远小于 0.60，于是尾元音被贴到下一句开头。
+3. 同一函数里 `current_vowel` 分支（单元内非首音）此前完全不检查时间距离，跨换气碎片同样会继承旧元音。
+
+修复（`inference/API/game_api.py::extract_pitches_and_align`）：新增 `CONTINUATION_MAX_GAP_SEC = 0.05`，两条续音分支都要求「与上一音符首尾相接」；不满足就丢弃该碎片（仍推进 `current_onset`，不影响后续对齐）。melisma 续音本来就是相邻音符，`collapse_vibrato_tails` 的 0.005s join 阈值也印证了这一点。
+
+验证（GPU/DirectML，`--batch-size 1`，歌词对照 + kana）：
+
+- 用户截图的碎片消失：`ど(168.74–169.45) → な(169.97–170.12) → い → の → で → しょ`，不再有 お。
+- 旧文件里 6 处同型碎片（73.23 う、85.35 う、104.03 う、169.92 お、226.59 う、260.70 う）全部消失；紧邻上一音符的 melisma 续音（如 226.81 お）保留。
+- 全曲 494 音符，lyric=っ **0**、`+~`/`-` **0**；494 与 CPU 的 502 差异仍属 §6.2 的 DirectML 非确定性。
+- 新增单测 `tests/test_game_api.py::test_lyricless_blip_after_pause_does_not_prepend_previous_vowel`（跨 chunk 复现 など→お→ない）。
+- 注：`--batch-size 4` 的 DML 本轮在 encoder 节点抛 `UnicodeDecodeError`（onnxruntime 解码 GPU 错误信息失败），`batch-size 1` 可跑通。
+
 ## 7. 待讨论
 
 1. ~~有同源高电平 stem 时还需要 mix 通道吗？~~ 已定：需要，但只做「一票否决休止」和节拍参考；α 混合通道只在「只有带和声干声、没有去和声干声」时才有意义，属于不推荐路径。

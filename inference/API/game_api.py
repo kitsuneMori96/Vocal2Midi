@@ -389,6 +389,11 @@ VIBRATO_MAX_FRAGMENT_SEC = 0.25
 VIBRATO_MIN_SPAN_SEC = 0.30
 VIBRATO_JOIN_SEC = 0.005
 VIBRATO_PHRASE_GAP_SEC = 0.60
+# A melisma tail continues the previous note without a pause. A lyric-less
+# fragment that starts later than this after the previous note sits on the
+# next syllable's onset, so repeating the old vowel there prepends it to the
+# next lyric instead of continuing the previous one.
+CONTINUATION_MAX_GAP_SEC = 0.05
 VIBRATO_MAX_CENTRE_OFFSET = 1.0
 VIBRATO_MIN_REVERSALS = 2
 
@@ -652,21 +657,22 @@ def extract_pitches_and_align(
                         is_continuation = False
                     else:
                         is_continuation = True
-                        lyric_to_assign = current_vowel
-                        if not lyric_to_assign:
-                            prev_note = all_notes[-1] if all_notes else None
-                            if (
-                                prev_note is None
-                                or current_onset - prev_note.offset > VIBRATO_PHRASE_GAP_SEC
-                            ):
-                                # No syllable to continue: a '+' unit opening a
-                                # new phrase is unphonemizable in OpenUtau.
-                                current_onset += n_dur
-                                continue
-                            lyric_to_assign = (
-                                _continuation_lyric(prev_note.lyric, language, lyric_output_mode)
-                                or sustain_lyric
-                            )
+                        prev_note = all_notes[-1] if all_notes else None
+                        if (
+                            prev_note is None
+                            or current_onset - prev_note.offset > CONTINUATION_MAX_GAP_SEC
+                        ):
+                            # No syllable and no touch with the previous note:
+                            # a GAME false positive on the next syllable's
+                            # onset. Singing the old vowel here would paste
+                            # the previous syllable's tail in front of the
+                            # next lyric, so drop the fragment.
+                            current_onset += n_dur
+                            continue
+                        lyric_to_assign = current_vowel or (
+                            _continuation_lyric(prev_note.lyric, language, lyric_output_mode)
+                            or sustain_lyric
+                        )
 
                     is_contiguous = len(all_notes) > 0 and abs(all_notes[-1].offset - current_onset) < 0.01
                     can_merge = (
