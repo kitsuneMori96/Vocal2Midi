@@ -290,7 +290,28 @@ def _run_with_fake_game(monkeypatch, words, chars, durations, presence, scores):
     return notes
 
 
-def test_note_in_unvoiced_word_continues_previous_vowel(monkeypatch):
+def test_unvoiced_fragment_at_held_pitch_keeps_its_vowel(monkeypatch):
+    words = [
+        _make_word(0.0, 0.30, "SP", [(0.0, 0.30, "SP")]),
+        _make_word(0.30, 0.70, "a", [(0.30, 0.70, "a")]),
+        _make_word(0.70, 0.90, "SP", [(0.70, 0.90, "SP")]),
+        _make_word(0.90, 1.30, "a", [(0.90, 1.30, "a")]),
+    ]
+
+    notes = _run_with_fake_game(
+        monkeypatch, words, ["な", "が"],
+        durations=[0.30, 0.40, 0.20, 0.40],
+        presence=[1, 1, 1, 1],
+        scores=[60, 62, 62, 65],
+    )
+
+    # A fragment at the held pitch continues the previous vowel instead of
+    # exporting a bare '+' continuation.
+    assert [n.lyric for n in notes] == ["な", "あ", "が"]
+    assert [round(n.onset, 3) for n in notes] == [0.30, 0.70, 0.90]
+
+
+def test_unvoiced_fragment_anticipating_next_note_is_dropped(monkeypatch):
     words = [
         _make_word(0.0, 0.30, "SP", [(0.0, 0.30, "SP")]),
         _make_word(0.30, 0.70, "a", [(0.30, 0.70, "a")]),
@@ -305,11 +326,38 @@ def test_note_in_unvoiced_word_continues_previous_vowel(monkeypatch):
         scores=[60, 62, 64, 65],
     )
 
-    # The leading orphan is dropped; the in-phrase unvoiced note sings あ
-    # instead of exporting a bare '+' continuation.
-    assert [n.lyric for n in notes] == ["な", "あ", "が"]
-    assert [round(n.onset, 3) for n in notes] == [0.30, 0.70, 0.90]
-    assert [round(n.offset, 3) for n in notes] == [0.70, 0.90, 1.30]
+    # The 64 fragment already sits on が's pitch and touches it: dropping it
+    # keeps the sokuon closure silent instead of singing a filler vowel there.
+    assert [n.lyric for n in notes] == ["な", "が"]
+    assert [round(n.onset, 3) for n in notes] == [0.30, 0.90]
+    assert [round(n.offset, 3) for n in notes] == [0.70, 1.30]
+
+
+def test_natte_burst_is_one_short_a_not_three(monkeypatch):
+    # Real GAME output for 月夜の君と空の上 67.0-68.0s (鼓動強くなって): HFA splits
+    # the word into な + っ + て's consonant onset, and GAME returns a 0.08s
+    # burst plus two filler notes inside the unvoiced units.
+    words = [
+        _make_word(0.00, 0.16, "SP", [(0.00, 0.16, "SP")]),
+        _make_word(0.16, 0.64, "a", [(0.16, 0.64, "a")]),
+        _make_word(0.64, 0.69, "SP", [(0.64, 0.69, "SP")]),
+        _make_word(0.69, 0.79, "SP", [(0.69, 0.79, "SP")]),
+        _make_word(0.79, 1.13, "te", [(0.79, 0.83, "t"), (0.83, 1.13, "e")]),
+    ]
+
+    notes = _run_with_fake_game(
+        monkeypatch, words, ["な", "て"],
+        durations=[0.16, 0.40, 0.08, 0.05, 0.10, 0.04, 0.30],
+        presence=[1, 1, 1, 1, 1, 1, 1],
+        scores=[60, 65, 67.02, 66.88, 61.41, 63.0, 63.0],
+    )
+
+    # な stays its own note, the burst becomes one 0.13s あ, and the 61.4
+    # filler over the closure is dropped instead of singing a flat a.
+    assert [n.lyric for n in notes] == ["な", "あ", "て"]
+    assert [round(n.onset, 3) for n in notes] == [0.16, 0.56, 0.83]
+    assert [round(n.offset, 3) for n in notes] == [0.56, 0.69, 1.13]
+    assert [round(n.pitch, 2) for n in notes] == [65.0, 67.02, 63.0]
 
 
 def test_sokuon_word_does_not_steal_the_next_lyric(monkeypatch):

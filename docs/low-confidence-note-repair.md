@@ -272,6 +272,26 @@ GAME 的 `onnx_runtime.infer_batch` 本身没有随机数，输入由确定性�
 
 注意：`_enumerate_dxgi_adapters` 的 lru_cache 只缓存适配器列表，空闲显存每次现查，否则 GAME 阶段会拿到 RMVPE 运行前的旧值。
 
+### 6.8「なって」的第二段元音被切成三连 あ（2026-11-06 修复）
+
+现象：67s 附近的「なって」在 OpenUtau 里是 `な → あ(0.08s) → あ(0.05s) → あ(0.10s) → て`，听感是三连 a-a-a，其中 0.10s 那个还是低八度左右的错音高。正确画法（用户提供的图1）是 `な(0.40s) | 短 あ(约 0.14s，紧贴 な、中间无休止) | 休止 | て`：あ 必须独立成音符，否则「a」的发音会突兀；但也不能把 な 和 あ 并成一个长音。
+
+定位（chunk 内 HFA 单元表 + GAME 输出）：
+
+1. HFA 把该词切成 `な 0.48 / っ 0.05 / て-t 起音 0.10 / て 0.34`，四个单元全部 vuv=1（日语促音与塞音起音在 GAME 里仍报 presence）。
+2. 在 な 单元内 GAME 又插了一个内部边界，输出 `な 0.40@65` + `あ 0.08@67.02`；在 っ 与 て-t 两个无元音单元里再凭空报出 `0.05@66.88`（爆发音的衰减尾）和 `0.10@61.41`（静音 + 塞音闭塞）。
+3. 序号对齐后这三个碎片都没有歌词，走续音兜底 `_continuation_lyric`，全部填成 あ；合并判定用 0.1 半音阈值，66.88 与 67.02 差 0.14 没合上，于是三连 あ。61.41 那个既没合上也没丢，就是错音高的来源。
+
+修复（`inference/API/game_api.py::extract_pitches_and_align`）：
+
+- `CONTINUATION_MERGE_PITCH_SEMITONES = 0.5`：同一个 burst 内音高估计只差几 cents 的碎片直接合并，不再要求 < 0.1。な 与 あ 音高差 2 个半音，不会被误并，`な|あ` 保持两音符。
+- 记录当前音符所属单元的 `word_vuvs`（`unit_unvoiced`），并对每个音符预扫下一个非休止音符的音高与起点。无元音单元里的无歌词碎片如果「结束处距下一个音符 ≤ `NEXT_ONSET_ANTICIPATION_SEC = 0.02s`」且「音高更接近下一个音符而非上一个音符」，说明它是下一音节音高提前泄漏到闭塞段，直接丢弃——不再唱出一个贯穿促音闭塞的低元音。
+
+验证（GPU/DirectML，62.0–69.1s 干声片段，`--batch-size 4`，歌词对照 + kana，`--tempo 71.7`）：
+
+- 输出恰好 `な 0.399s@65 → あ 0.141s@67（首尾紧接）→ 0.09s 间隔 → て 0.331s@63`，与图1一致；没有第三个 あ，也没有 61 音高的填充音。
+- 单测：`test_natte_burst_is_one_short_a_not_three`（真实 GAME 轨迹）、`test_unvoiced_fragment_at_held_pitch_keeps_its_vowel`、`test_unvoiced_fragment_anticipating_next_note_is_dropped`；`tests/test_game_api.py` 28 项全过。
+
 ## 7. 待讨论
 
 1. ~~有同源高电平 stem 时还需要 mix 通道吗？~~ 已定：需要，但只做「一票否决休止」和节拍参考；α 混合通道只在「只有带和声干声、没有去和声干声」时才有意义，属于不推荐路径。

@@ -406,6 +406,13 @@ VIBRATO_PHRASE_GAP_SEC = 0.60
 # next syllable's onset, so repeating the old vowel there prepends it to the
 # next lyric instead of continuing the previous one.
 CONTINUATION_MAX_GAP_SEC = 0.05
+# GAME can split one sustained vowel into pieces whose pitch estimates differ
+# by a few cents; merging only exact matches left an a-a-a stutter.
+CONTINUATION_MERGE_PITCH_SEMITONES = 0.5
+# A lyric-less fragment that ends on the next note and already carries the
+# next syllable's pitch is that syllable's onset leaking backwards, not a
+# continuation of the previous vowel.
+NEXT_ONSET_ANTICIPATION_SEC = 0.02
 VIBRATO_MAX_CENTRE_OFFSET = 1.0
 VIBRATO_MIN_REVERSALS = 2
 
@@ -426,6 +433,7 @@ def _continuation_lyric(prev_lyric: str, language: str | None, lyric_output_mode
     if (lyric_output_mode or "").lower() == "kana":
         return _ROMAJI_VOWEL_TO_KANA.get(vowel, vowel)
     return "n" if vowel == "N" else vowel.lower()
+
 
 
 def _lyric_vowel(lyric: str) -> str | None:
@@ -643,13 +651,23 @@ def extract_pitches_and_align(
             current_onset = info["offset"]
             pending_lyric = ""
             current_vowel = ""
+            unit_unvoiced = False
             unit_vowels = info.get("vowels") or []
 
-            for n_seq, n_dur, n_slur in zip(a_note_seq, a_note_dur, a_note_slur):
+            note_onsets = np.cumsum([0.0] + list(a_note_dur))[:-1] + info["offset"]
+            next_notes = [None] * len(a_note_seq)
+            upcoming = None
+            for i in range(len(a_note_seq) - 1, -1, -1):
+                next_notes[i] = upcoming
+                if a_note_seq[i] != "rest":
+                    upcoming = (librosa.note_to_midi(a_note_seq[i], round_midi=False), note_onsets[i])
+
+            for i, (n_seq, n_dur, n_slur) in enumerate(zip(a_note_seq, a_note_dur, a_note_slur)):
                 if n_slur == 0:
                     if lyric_idx < len(info["lyrics"]):
                         word_lyric = info["lyrics"][lyric_idx]
-                        if info["word_vuvs"][lyric_idx] == 1:
+                        unit_unvoiced = info["word_vuvs"][lyric_idx] == 0
+                        if not unit_unvoiced:
                             pending_lyric = word_lyric
                             current_vowel = (
                                 unit_vowels[lyric_idx] or ""
@@ -681,6 +699,20 @@ def extract_pitches_and_align(
                             # next lyric, so drop the fragment.
                             current_onset += n_dur
                             continue
+                        if unit_unvoiced:
+                            nxt = next_notes[i]
+                            if (
+                                nxt is not None
+                                and nxt[1] - (current_onset + n_dur) <= NEXT_ONSET_ANTICIPATION_SEC
+                                and abs(pitch - nxt[0]) < abs(pitch - prev_note.pitch)
+                            ):
+                                # The fragment sits on a consonant-only unit and
+                                # already carries the next syllable's pitch: it
+                                # is that syllable leaking backwards, not a
+                                # continuation. Keeping it sang a low filler
+                                # vowel through the sokuon closure.
+                                current_onset += n_dur
+                                continue
                         lyric_to_assign = current_vowel or (
                             _continuation_lyric(prev_note.lyric, language, lyric_output_mode)
                             or sustain_lyric
@@ -690,7 +722,7 @@ def extract_pitches_and_align(
                     can_merge = (
                         is_continuation
                         and is_contiguous
-                        and abs(all_notes[-1].pitch - pitch) < 0.1
+                        and abs(all_notes[-1].pitch - pitch) < CONTINUATION_MERGE_PITCH_SEMITONES
                         and all_notes[-1].lyric == lyric_to_assign
                     )
 
