@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QGridLayout, QLabel
 
 from gui.bpm_spinbox import BpmSpinBox
 from gui.i18n import tr
+from gui.lyric_language import detect_lyric_language
 from gui.option_tables import (
     DEFAULT_LYRIC_OUTPUT,
     EXPORT_FORMAT_CHOICES,
@@ -100,6 +101,9 @@ class FileSettingsDialog(MessageBoxBase):
         self.lyrics_edit.setPlaceholderText(tr("ref_lyrics_hint"))
         self.lyrics_edit.setText(base_values["original_lyrics"])
         self.cb_match_lyrics.checkedChanged.connect(self.lyrics_edit.setEnabled)
+        # Connected after setText so an existing per-file choice survives the
+        # dialog opening; only an actual edit re-infers the language.
+        self.lyrics_edit.textChanged.connect(self._on_reference_lyrics_changed)
         self.lyrics_edit.setEnabled(bool(base_values.get("match_lyrics", False)))
         _add_pair(grid, 2, 2, tr("ref_lyrics"), self.lyrics_edit, self)
 
@@ -170,6 +174,14 @@ class FileSettingsDialog(MessageBoxBase):
         self.lyric_output_combo.setCurrentIndex(max(0, self.lyric_output_combo.findData(selected)))
         self.lyric_output_combo.setEnabled(not locked)
         self.lyric_output_combo.setToolTip(tr("lyric_output_locked_hint") if locked else "")
+
+    def _on_reference_lyrics_changed(self, _text: str = ""):
+        detected = detect_lyric_language(self.lyrics_edit.text())
+        if detected is None:
+            return
+        index = self.lang_combo.findData(detected)
+        if index >= 0 and index != self.lang_combo.currentIndex():
+            self.lang_combo.setCurrentIndex(index)
 
     def _on_language_changed(self):
         lang = self.lang_combo.currentData() or "zh"

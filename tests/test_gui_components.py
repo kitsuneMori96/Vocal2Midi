@@ -150,6 +150,31 @@ def test_batch_mode_hides_lyric_matching_and_invalidates_lyrics(qapp):
     assert restored_base["original_lyrics"] == "test lyrics 123"
 
 
+def test_reference_lyrics_infers_target_language(qapp):
+    from gui.auto_lyric_view import AutoLyricInterface
+    from gui.global_settings_view import GlobalSettingsInterface
+    from gui.model_config_view import ModelConfigInterface
+
+    settings_ui = GlobalSettingsInterface()
+    model_cfg = ModelConfigInterface(settings_ui.settings, settings_ui.project_root)
+    view = AutoLyricInterface(settings_ui, model_cfg)
+    view.lang_combo.setCurrentIndex(view.lang_combo.findData("zh"))
+
+    view.lyrics_edit.setPlainText("夢を見ていたいわ")
+    assert view.lang_combo.currentData() == "ja"
+    assert view.lyric_output_combo.currentData() in ("romaji", "kana")
+
+    view.lyrics_edit.setPlainText("月亮代表我的心")
+    assert view.lang_combo.currentData() == "zh"
+
+    view.lyrics_edit.setPlainText("I dreamed of you again")
+    assert view.lang_combo.currentData() == "en"
+
+    # Symbol-only input must not clobber the current choice.
+    view.lyrics_edit.setPlainText("...!?")
+    assert view.lang_combo.currentData() == "en"
+
+
 def test_batch_mode_setting_toggle_and_defaults(qapp):
     from gui.global_settings_view import GlobalSettingsInterface
 

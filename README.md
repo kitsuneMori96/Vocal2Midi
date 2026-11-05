@@ -146,7 +146,7 @@ The GUI is the main way to use Vocal2Midi interactively. It lets you:
 - choose language and lyric output format: Hanzi, Pinyin, Romaji, Kana, Word, or Jyutping
 - select quantization modes: smart rhythmic alignment or simple quantization
 - toggle live UI language and themes
-- provide optional reference lyrics
+- provide optional reference lyrics; pasting them infers the target language (kana → Japanese, Hanzi → Chinese, Latin → English)
 - export MIDI, USTX, VSQX, text, CSV, chunk audio, and alignment artifacts
 
 The application-layer job entrypoint is run_auto_lyric_job in [`application/pipeline.py`](application/pipeline.py), which dispatches into the hybrid inference pipeline in [`inference/pipeline/auto_lyric_hybrid.py`](inference/pipeline/auto_lyric_hybrid.py).

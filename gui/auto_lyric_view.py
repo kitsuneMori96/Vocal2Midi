@@ -31,6 +31,7 @@ from gui.fluent_utils import t0_nstep_to_ts
 from gui.fluent_worker import WorkerThread, HYBRID_AVAILABLE
 from gui.i18n import tr
 from gui.log_terminal import LogTerminal
+from gui.lyric_language import detect_lyric_language
 from gui.option_tables import (
     DEFAULT_LYRIC_OUTPUT,
     EXPORT_FORMAT_CHOICES,
@@ -148,6 +149,7 @@ class AutoLyricInterface(ScrollArea):
         self._bind_tr(lambda: self.lyrics_edit.setPlaceholderText(tr("ref_lyrics_hint")))
         self.lyrics_edit.setMaximumHeight(80)
         self.lyrics_edit.setAcceptDrops(False)  # let drops fall through to the file list
+        self.lyrics_edit.textChanged.connect(self._on_reference_lyrics_changed)
         lyric_layout.addWidget(self.lyrics_edit)
         self.vBoxLayout.addWidget(self.lyric_card)
 
@@ -645,6 +647,14 @@ class AutoLyricInterface(ScrollArea):
             zh_idx = self.lang_combo.findData("zh")
             self.lang_combo.setCurrentIndex(max(0, zh_idx))
             self.update_lyric_output_options()
+
+    def _on_reference_lyrics_changed(self):
+        detected = detect_lyric_language(self.lyrics_edit.toPlainText())
+        if detected is None:
+            return
+        index = self.lang_combo.findData(detected)
+        if index >= 0 and index != self.lang_combo.currentIndex():
+            self.lang_combo.setCurrentIndex(index)
 
     def _on_language_changed(self, *_args):
         if self._selected_language() == "yue" and self._alignment_engine() == "hfa":

@@ -75,6 +75,23 @@ def test_dialog_edits_return_backend_values(parent_widget):
     assert values["lyric_output"] == "romaji"
 
 
+def test_editing_reference_lyrics_infers_language(parent_widget):
+    dialog = FileSettingsDialog("a.wav", _base_values(match_lyrics=True), parent_widget)
+    dialog.lyrics_edit.setText("夢を見ていたいわ")
+    assert dialog.values()["language"] == "ja"
+    dialog.lyrics_edit.setText("月亮代表我的心")
+    assert dialog.values()["language"] == "zh"
+
+
+def test_opening_with_existing_lyrics_keeps_the_per_file_language(parent_widget):
+    dialog = FileSettingsDialog(
+        "a.wav",
+        _base_values(language="zh", original_lyrics="夢を見ていたいわ", match_lyrics=True),
+        parent_widget,
+    )
+    assert dialog.values()["language"] == "zh"
+
+
 def test_pinyin_engine_locks_lyric_output(parent_widget):
     dialog = FileSettingsDialog(
         "a.wav", _base_values(chinese_asr_engine="pinyin", lyric_output="hanzi"), parent_widget
