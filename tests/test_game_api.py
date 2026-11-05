@@ -1,8 +1,11 @@
 import numpy as np
 import pytest
 
+import inference.API.game_api as game_api
 from inference.API.game_api import (
+    _continuation_lyric,
     collapse_vibrato_tails,
+    extract_pitches_and_align,
     extract_pitches_only,
     extract_vowel_boundaries,
 )
@@ -199,6 +202,88 @@ def test_en_singable_phones_reject_consonant_v_names():
 
 def _note(onset, dur, pitch, lyric):
     return NoteInfo(onset=onset, offset=onset + dur, pitch=pitch, lyric=lyric)
+
+
+def test_continuation_lyric_reuses_previous_vowel():
+    assert _continuation_lyric("お", "ja", "kana") == "お"
+    assert _continuation_lyric("の", "ja", "kana") == "お"
+    assert _continuation_lyric("o", "ja", "romaji") == "o"
+    assert _continuation_lyric("ni", "zh", "pinyin") == "i"
+    assert _continuation_lyric("fall", "en", "word") is None
+    assert _continuation_lyric("-", "ja", "kana") is None
+
+
+class _DummyGameModel:
+    timestep = 0.01
+
+
+def _run_with_fake_game(monkeypatch, words, chars, durations, presence, scores):
+    chunk = {"waveform": np.zeros(16000 * 4, dtype=np.float32), "offset": 0.0}
+    monkeypatch.setattr(
+        game_api,
+        "_run_game_inference_batch",
+        lambda **kwargs: [(
+            np.asarray(durations, dtype=np.float32),
+            np.asarray(presence, dtype=np.int64),
+            np.asarray(scores, dtype=np.float32),
+        )],
+    )
+    notes, _ = extract_pitches_and_align(
+        [chunk],
+        sr=16000,
+        pred_dict={"chunk_0": (None, None, words)},
+        chars_dict={"chunk_0": chars},
+        game_model=_DummyGameModel(),
+        ts=[0.0],
+        seg_threshold=0.2,
+        seg_radius=0.02,
+        est_threshold=0.2,
+        batch_size=1,
+        language="ja",
+        lyric_output_mode="kana",
+    )
+    return notes
+
+
+def test_note_in_unvoiced_word_continues_previous_vowel(monkeypatch):
+    words = [
+        _make_word(0.0, 0.30, "SP", [(0.0, 0.30, "SP")]),
+        _make_word(0.30, 0.70, "a", [(0.30, 0.70, "a")]),
+        _make_word(0.70, 0.90, "SP", [(0.70, 0.90, "SP")]),
+        _make_word(0.90, 1.30, "a", [(0.90, 1.30, "a")]),
+    ]
+
+    notes = _run_with_fake_game(
+        monkeypatch, words, ["な", "が"],
+        durations=[0.30, 0.40, 0.20, 0.40],
+        presence=[1, 1, 1, 1],
+        scores=[60, 62, 64, 65],
+    )
+
+    # The leading orphan is dropped; the in-phrase unvoiced note sings あ
+    # instead of exporting a bare '+' continuation.
+    assert [n.lyric for n in notes] == ["な", "あ", "が"]
+    assert [round(n.onset, 3) for n in notes] == [0.30, 0.70, 0.90]
+    assert [round(n.offset, 3) for n in notes] == [0.70, 0.90, 1.30]
+
+
+def test_unvoiced_word_note_after_phrase_gap_is_dropped(monkeypatch):
+    words = [
+        _make_word(0.0, 0.30, "SP", [(0.0, 0.30, "SP")]),
+        _make_word(0.30, 0.70, "a", [(0.30, 0.70, "a")]),
+        _make_word(0.70, 2.00, "SP", [(0.70, 2.00, "SP")]),
+        _make_word(2.00, 2.40, "a", [(2.00, 2.40, "a")]),
+    ]
+
+    notes = _run_with_fake_game(
+        monkeypatch, words, ["な", "が"],
+        durations=[0.30, 0.40, 1.10, 0.20, 0.40],
+        presence=[1, 1, 0, 1, 1],
+        scores=[60, 62, 0, 64, 65],
+    )
+
+    assert [n.lyric for n in notes] == ["な", "が"]
+    assert notes[-1].onset == pytest.approx(2.00)
 
 
 # Real GAME output for 月夜の君と空の上 110.17-111.22s: the sustained 「イ」 tail
