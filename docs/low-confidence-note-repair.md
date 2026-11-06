@@ -292,6 +292,27 @@ GAME 的 `onnx_runtime.infer_batch` 本身没有随机数，输入由确定性�
 - 输出恰好 `な 0.399s@65 → あ 0.141s@67（首尾紧接）→ 0.09s 间隔 → て 0.331s@63`，与图1一致；没有第三个 あ，也没有 61 音高的填充音。
 - 单测：`test_natte_burst_is_one_short_a_not_three`（真实 GAME 轨迹）、`test_unvoiced_fragment_at_held_pitch_keeps_its_vowel`、`test_unvoiced_fragment_anticipating_next_note_is_dropped`；`tests/test_game_api.py` 28 项全过。
 
+### 6.9 手工画音符的参考曲线（2026-11-06 新增）
+
+算法在「该有几个音、要不要连音」上不如人耳，但在音高和时值上比人准。所以对难句提供一条人工路线：把 RMVPE 的**绝对音高**和**有声/无声**写进 USTX，用户在 OpenUtau 里照着曲线自己画。
+
+```bash
+python scripts/sentence_curves.py song.flac --base song.ustx \
+    --lyrics-file song.lrc --line 10 -o song_curves.ustx --device dml
+```
+
+实现要点（`inference/pipeline/ustx_curves.py` + `scripts/sentence_curves.py`）：
+
+- 用 OpenUtau 的原生 **MaskedCurve** 表达式（`type: MaskedCurve`，存在 `voice_parts[].masked_curves`），不是普通 Curve：`masked_curves` 在无值区间不画线，天然表达「这里没声」；且 `ExpSelectorViewModel` 会把所有 MaskedCurve 无条件列进表达式下拉框，换渲染器也不会被 `SupportsExpression` 过滤掉。
+- `f0`：MIDI×100（6500 = 65.00），min 2400 / max 10800 / default 6000（与 fork 的 `rpit` 同口径）。只覆盖有声帧，静音处断开成多段 run。
+- `vuv`：有声段常量 100（min 0 / max 200，线落在面板中间），静音处直接没有 run。
+- 时间轴按 tempo map 秒→tick 换算（支持多 tempo），再减 `voice_parts[].position`；值按 5 tick 栅格用 np.interp 重采样成连续 run（`UMaskedRun` 要求 `x + i*5` 连续）。
+- 只替换目标窗口内已有的同 abbr 曲线，pitd / 音符 / tempo / 其它表达式原样保留；同名输出拒绝覆盖 base。
+- 输出旁写 `<name>.curves.json`（窗口 tick、每段 run 数、值域）便于核对。
+
+验证（GPU/DirectML，歌词第 10 行「鼓動強くなって」64.535–69.224s）：f0 5 段 run / 450 值，值域 58.44–69.15；vuv 同窗口 5 段。抽查音符中点：ど 62↔61.96、つ 62↔62.02、よ 64↔64.01、な 65↔65.09、あ 67↔67.04 —— 曲线与音符一致；而 67.57 那个 `あ@61` 落在 f0 的空档里（vuv 断开），正是需要手动画掉的多余音符。
+
+
 ## 7. 待讨论
 
 1. ~~有同源高电平 stem 时还需要 mix 通道吗？~~ 已定：需要，但只做「一票否决休止」和节拍参考；α 混合通道只在「只有带和声干声、没有去和声干声」时才有意义，属于不推荐路径。
