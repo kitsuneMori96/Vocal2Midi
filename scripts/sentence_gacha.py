@@ -253,6 +253,8 @@ def main(argv=None) -> int:
         else:
             splice_range = window
         engines = _parse_engines(args.alignments, args.aligner)
+        if args.language == "yue" and "hfa" in engines:
+            raise ValueError("Cantonese ('yue') is not supported by HubertFA (HFA); use --alignments tifa")
         takes = build_takes(
             engines=engines,
             strategy=args.strategy,
@@ -279,7 +281,9 @@ def main(argv=None) -> int:
         f"Clip {window[0]:.3f}-{window[1]:.3f}s, splice region "
         f"{splice_range[0]:.3f}-{splice_range[1]:.3f}s"
     )
-    clip_lines_text = clip_lyrics_for_window(lines, window[0], window[1])
+    clip_lines_text = clip_lyrics_for_window(
+        lines, window[0], window[1], fallback=line.text if line is not None else ""
+    )
     if line is None:
         lyric_text = clip_lines_text
         logger.warning("No --line/--sentence: using every line that overlaps the window.")
@@ -303,7 +307,6 @@ def main(argv=None) -> int:
 
     config = GachaConfig(
         audio_path=str(args.audio),
-        lyrics_text=raw_lyrics,
         output_dir=Path(args.output_dir),
         output_key=output_key,
         language=args.language,

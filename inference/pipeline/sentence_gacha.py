@@ -23,7 +23,6 @@ from inference.LyricFA.tools.lyric_matcher import (
     _LRC_CREDIT_RE,
     _LRC_METADATA_RE,
     _LRC_TIMESTAMP_RE,
-    strip_lrc_markup,
 )
 from inference.io.audio_io import load_audio
 from inference.io.note_io import NoteInfo
@@ -100,7 +99,6 @@ class TakeResult:
 @dataclass
 class GachaConfig:
     audio_path: str
-    lyrics_text: str
     output_dir: Path
     output_key: str
     language: str
@@ -230,7 +228,9 @@ def resolve_window(
     return start, end
 
 
-def clip_lyrics_for_window(lines: list[LyricLine], start: float, end: float) -> str:
+def clip_lyrics_for_window(
+    lines: list[LyricLine], start: float, end: float, fallback: str = ""
+) -> str:
     selected = [
         line for line in lines
         if line.start is not None
@@ -239,7 +239,9 @@ def clip_lyrics_for_window(lines: list[LyricLine], start: float, end: float) -> 
     ]
     if selected:
         return "\n".join(line.text for line in selected)
-    return strip_lrc_markup("\n".join(line.text for line in lines))
+    if fallback:
+        return fallback
+    return "\n".join(line.text for line in lines)
 
 
 def _round_sig(value: float, digits: int = 3) -> float:
@@ -344,7 +346,9 @@ def _note_diagnostics(notes: list[NoteInfo], start: float, end: float) -> dict:
         if right.onset - left.offset > 0.05:
             gaps += 1
     repeats = sum(n - 1 for n in _run_lengths(inside) if n >= RUN_FLAG_LENGTH)
-    flag_score = len(short) * 2 + repeats * 3 + gaps
+    # Gaps are normal around sokuon and rests, so only fragments and
+    # same-lyric runs feed the score.
+    flag_score = len(short) * 2 + repeats * 3
     return {
         "note_count": len(inside),
         "min_duration": round(min(durations), 4) if durations else 0.0,
@@ -415,6 +419,8 @@ def run_gacha(
     )
     rmvpe_result = _shifted_rmvpe(rmvpe_result, start)
 
+    # Deliberately slice without the RMVPE mask: chunking must not depend on
+    # whether --pitch-curve was requested, or takes would not be comparable.
     chunks = _slice_chunks(
         clip, sr,
         slicing_method=config.slicing_method,
