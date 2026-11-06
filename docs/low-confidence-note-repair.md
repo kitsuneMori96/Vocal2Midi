@@ -312,6 +312,16 @@ python scripts/sentence_curves.py song.flac --base song.ustx \
 
 验证（GPU/DirectML，歌词第 10 行「鼓動強くなって」64.535–69.224s）：f0 5 段 run / 450 值，值域 58.44–69.15；vuv 同窗口 5 段。抽查音符中点：ど 62↔61.96、つ 62↔62.02、よ 64↔64.01、な 65↔65.09、あ 67↔67.04 —— 曲线与音符一致；而 67.57 那个 `あ@61` 落在 f0 的空档里（vuv 断开），正是需要手动画掉的多余音符。
 
+GUI（2026-11-06）：Windows 与 macOS 两套外壳都新增「难句精修」页（`gui/sentence_repair_view.py`）：
+
+- 输入音频 / LRC / 底稿 USTX；解析歌词后按 `行号  起-止  文本` 列出目标行，并从歌词内容自动推断语言（复用 `gui/lyric_language.py`，LRC 元信息不参与判断）；底稿的 tempo 自动读入。无时间戳的纯文本歌词需手填起止秒数。
+- 抽卡面板：策略（随机 / 网格 / 重复）、每组数量、随机种子、TiFA / HubertFA 勾选；窗口 = 行区间 ± 前导/尾部，或手填起止，页面实时显示「片段 + 拼接区」。
+- 结果表列 `Take / 对齐 / 音符 / 最短 / 碎片 / 重复音 / 标记分 / 歌词序列`；选中候选后「应用选中候选」用 manifest 的 `splice_range` 写 `<base>_patched.ustx`，只替换拼接区，pitd 与已有曲线原样保留。
+- 「导出参考曲线」与 CLI 共用 `application/sentence_jobs.export_reference_curves`，写 `<base>_curves.ustx`（f0 + vuv）。
+- 长任务在 `FunctionWorker`（`gui/fluent_worker.py`）里执行，复用主流程的 stdout/logging 捕获；两套外壳的关闭流程会先停掉主页面与本页的 worker。
+
+GUI 实跑（GPU/DirectML，同一首、同一行；LRC 自动识别为 ja → romaji ASR + TiFA 对齐 20 token，无 pitch-only 回退）：2 个候选各 11 音符、最短 0.130s、标记分 0；应用 `tifa-01` 后 `<base>_patched.ustx` 共 487 音符，窗口内歌词为 `ko do o tsu yo ku na a te ma ru`；参考曲线 f0/vuv 各 5 段 463 值，底稿 489 个音符与 pitd 原样保留。
+
 
 ## 7. 待讨论
 

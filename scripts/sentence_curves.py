@@ -20,10 +20,7 @@ import argparse
 import importlib
 import logging
 import sys
-from dataclasses import replace
 from pathlib import Path
-
-import yaml
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -113,7 +110,7 @@ def main(argv=None) -> int:
 
     from inference.io.audio_io import load_audio
 
-    waveform, sr = load_audio(args.audio, 44100)
+    waveform, sr = load_audio(str(args.audio), 44100)
     total_duration = len(waveform) / 44100.0
     try:
         line = None
@@ -132,49 +129,25 @@ def main(argv=None) -> int:
     except (ValueError, FileNotFoundError) as error:
         logger.error(str(error))
         return 2
-    start, end = window
-    logger.info(f"[Curves] window {start:.3f}-{end:.3f}s")
 
-    clip = waveform[int(round(start * 44100)):int(round(end * 44100))]
-    if clip.size < int(0.2 * 44100):
-        logger.error("window is too short")
+    from application.sentence_jobs import export_reference_curves
+
+    try:
+        summary = export_reference_curves(
+            audio_path=args.audio,
+            base_path=args.base,
+            out_path=out_path,
+            window=window,
+            curves=curve_names,
+            device=args.device,
+            rmvpe_model_path=args.rmvpe_model,
+            track=args.track,
+            replace_window=not args.no_replace,
+            preloaded_audio=(waveform, sr),
+        )
+    except (ValueError, RuntimeError, FileNotFoundError) as error:
+        logger.error(str(error))
         return 2
-
-    from inference.pipeline.auto_lyric_hybrid import _extract_pitch_curve
-    from inference.pipeline.ustx_curves import build_f0_runs, build_vuv_runs, inject_curves
-
-    rmvpe = _extract_pitch_curve(
-        clip, 44100,
-        rmvpe_model_path=args.rmvpe_model,
-        output_format_set=["ustx"],
-        output_pitch_curve=True,
-        device=args.device,
-        cancel_checker=None,
-    )
-    if rmvpe is None:
-        logger.error("RMVPE did not produce a pitch curve")
-        return 2
-    rmvpe = replace(rmvpe, time_offset=start)
-
-    with args.base.open("r", encoding="utf-8") as f:
-        project = yaml.safe_load(f) or {}
-    tempos = project.get("tempos") or [{"position": 0, "bpm": project.get("bpm") or 120}]
-    resolution = int(project.get("resolution") or 480)
-    part = (project.get("voice_parts") or [{}])[0]
-    part_offset = int(part.get("position") or 0)
-
-    curves = {}
-    if "f0" in curve_names:
-        curves["f0"] = build_f0_runs(rmvpe, tempos, resolution, part_offset)
-    if "vuv" in curve_names:
-        curves["vuv"] = build_vuv_runs(rmvpe, tempos, resolution, part_offset)
-
-    summary = inject_curves(
-        args.base, out_path, curves,
-        window_seconds=None if args.no_replace else (start, end),
-        track=args.track,
-        preserve_existing=args.no_replace,
-    )
     for abbr, info in summary["curves"].items():
         logger.info(
             f"[Curves] {abbr}: {info['runs']} run(s), {info['values']} value(s) over ticks "

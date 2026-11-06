@@ -12,6 +12,7 @@ from gui.global_settings_view import GlobalSettingsInterface
 from gui.i18n import tr, set_language
 from gui.model_config_view import ModelConfigInterface
 from gui.auto_lyric_view import AutoLyricInterface
+from gui.sentence_repair_view import SentenceRepairInterface
 from gui.settings_utils import create_app_settings
 
 
@@ -51,6 +52,11 @@ class _FluentMainWindow(FluentWindow):
             self.modelConfigInterface,
             self,
         )
+        self.sentenceRepairInterface = SentenceRepairInterface(
+            self.globalSettingsInterface,
+            self.modelConfigInterface,
+            self,
+        )
 
         self.initNavigation()
         self.globalSettingsInterface.languageChanged.connect(self._on_language_changed)
@@ -60,12 +66,14 @@ class _FluentMainWindow(FluentWindow):
         self._retranslate_navigation()
         self.modelConfigInterface.retranslate_ui()
         self.autoLyricInterface.retranslate_ui()
+        self.sentenceRepairInterface.retranslate_ui()
         self.globalSettingsInterface.retranslate_ui()
 
     def _retranslate_navigation(self):
         nav = self.navigationInterface
         for page, key in (
             (self.autoLyricInterface, "nav_auto"),
+            (self.sentenceRepairInterface, "nav_repair"),
             (self.modelConfigInterface, "nav_model"),
             (self.globalSettingsInterface, "nav_settings"),
         ):
@@ -163,6 +171,7 @@ class _FluentMainWindow(FluentWindow):
 
     def initNavigation(self):
         self.addSubInterface(self.autoLyricInterface, FluentIcon.MUSIC, tr("nav_auto"))
+        self.addSubInterface(self.sentenceRepairInterface, FluentIcon.SYNC, tr("nav_repair"))
         self.addSubInterface(self.modelConfigInterface, FluentIcon.DEVELOPER_TOOLS, tr("nav_model"))
         self.addSubInterface(self.globalSettingsInterface, FluentIcon.SETTING, tr("nav_settings"), position=NavigationItemPosition.BOTTOM)
 
@@ -175,10 +184,15 @@ class _FluentMainWindow(FluentWindow):
         self.navigationInterface.setCurrentItem(self.autoLyricInterface.objectName())
         self.stackedWidget.setCurrentWidget(self.autoLyricInterface)
 
+    def _running_pages(self):
+        pages = (self.autoLyricInterface, self.sentenceRepairInterface)
+        return [page for page in pages if page.is_running()]
+
     def closeEvent(self, event):
         # Destroying a running QThread crashes at exit ("QThread: Destroyed
         # while thread is still running"); stop the worker first.
-        if self.autoLyricInterface.is_running():
+        running = self._running_pages()
+        if running:
             answer = QMessageBox.question(
                 self,
                 tr("close_running_title"),
@@ -189,8 +203,10 @@ class _FluentMainWindow(FluentWindow):
             if answer != QMessageBox.Yes:
                 event.ignore()
                 return
-            self.autoLyricInterface.request_stop()
-            if not self.autoLyricInterface.wait_for_worker(5000):
+            for page in running:
+                page.request_stop()
+            pending = [page for page in running if not page.wait_for_worker(5000)]
+            if pending:
                 # Cancellation is cooperative and the worker can sit in an
                 # uninterruptible call (ffmpeg decode allows up to 10 minutes),
                 # so hide the window and finish closing once the thread
@@ -198,7 +214,8 @@ class _FluentMainWindow(FluentWindow):
                 # geometry: the deferred close() runs on a hidden window.
                 self._persist_window_state()
                 self.hide()
-                self.autoLyricInterface.on_worker_settled(self.close)
+                for page in pending:
+                    page.on_worker_settled(self.close)
                 event.ignore()
                 return
         self._persist_window_state()

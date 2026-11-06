@@ -30,6 +30,7 @@ from gui.auto_lyric_view import AutoLyricInterface
 from gui.global_settings_view import GlobalSettingsInterface
 from gui.i18n import set_language, tr
 from gui.model_config_view import ModelConfigInterface
+from gui.sentence_repair_view import SentenceRepairInterface
 from gui.settings_utils import create_app_settings
 
 
@@ -65,13 +66,19 @@ class MacMainWindow(QMainWindow):
             self.modelConfigInterface,
             self,
         )
+        self.sentenceRepairInterface = SentenceRepairInterface(
+            self.globalSettingsInterface,
+            self.modelConfigInterface,
+            self,
+        )
 
         self._pages = [
             self.autoLyricInterface,
+            self.sentenceRepairInterface,
             self.modelConfigInterface,
             self.globalSettingsInterface,
         ]
-        self._nav_keys = ["nav_auto", "nav_model", "nav_settings"]
+        self._nav_keys = ["nav_auto", "nav_repair", "nav_model", "nav_settings"]
         self._build_layout()
         self._build_macos_menus()
         self.globalSettingsInterface.languageChanged.connect(self._on_language_changed)
@@ -108,7 +115,7 @@ class MacMainWindow(QMainWindow):
         for page, key, icon in zip(
             self._pages,
             self._nav_keys,
-            (FluentIcon.MUSIC, FluentIcon.DEVELOPER_TOOLS, FluentIcon.SETTING),
+            (FluentIcon.MUSIC, FluentIcon.SYNC, FluentIcon.DEVELOPER_TOOLS, FluentIcon.SETTING),
         ):
             item = QListWidgetItem(icon.icon(), tr(key))
             item.setData(Qt.UserRole, page.objectName())
@@ -216,11 +223,19 @@ class MacMainWindow(QMainWindow):
                 item.setText(tr(key))
         self.modelConfigInterface.retranslate_ui()
         self.autoLyricInterface.retranslate_ui()
+        self.sentenceRepairInterface.retranslate_ui()
         self.globalSettingsInterface.retranslate_ui()
         self._refresh_model_status()
 
+    def _running_pages(self):
+        return [
+            page for page in self._pages
+            if callable(getattr(page, "is_running", None)) and page.is_running()
+        ]
+
     def _finish_close(self, event):
-        if not self.autoLyricInterface.is_running():
+        running = self._running_pages()
+        if not running:
             event.accept()
             return
         answer = QMessageBox.question(
@@ -233,12 +248,15 @@ class MacMainWindow(QMainWindow):
         if answer != QMessageBox.Yes:
             event.ignore()
             return
-        self.autoLyricInterface.request_stop()
-        if self.autoLyricInterface.wait_for_worker(5000):
+        for page in running:
+            page.request_stop()
+        pending = [page for page in running if not page.wait_for_worker(5000)]
+        if not pending:
             event.accept()
             return
         self.hide()
-        self.autoLyricInterface.on_worker_settled(self.close)
+        for page in pending:
+            page.on_worker_settled(self.close)
         event.ignore()
 
     def closeEvent(self, event):
