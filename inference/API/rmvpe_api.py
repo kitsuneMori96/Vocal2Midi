@@ -33,6 +33,9 @@ class RmvpeResult:
     time_step_seconds: float
     midi_pitch: np.ndarray
     voiced_mask: np.ndarray | None = None
+    # Frame i is at i*time_step + time_offset; non-zero when the curve was
+    # inferred from a clip cut out of a longer song.
+    time_offset: float = 0.0
 
 
 class RmvpeTranscriber:

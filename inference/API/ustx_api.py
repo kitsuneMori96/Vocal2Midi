@@ -119,8 +119,9 @@ def _build_pitd_curve(notes: list[Any], rmvpe: RmvpeResult, tempo: float) -> tup
     pending: list[_PitchPoint] = []
     pending_note_idx = -1
     note_idx = 0
+    time_offset = float(getattr(rmvpe, "time_offset", 0.0) or 0.0)
     for i, mp in enumerate(rmvpe.midi_pitch):
-        t = i * rmvpe.time_step_seconds
+        t = i * rmvpe.time_step_seconds + time_offset
         while note_idx + 1 < len(notes) and notes[note_idx].offset <= t:
             note_idx += 1
         if note_idx >= len(notes):

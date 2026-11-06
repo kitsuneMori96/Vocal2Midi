@@ -47,8 +47,9 @@ def _build_pitch_data(notes,rmvpe,tempo):
             else:
                 xs.append(x); ys.append(y)
 
+    time_offset=float(getattr(rmvpe,"time_offset",0.0) or 0.0)
     for i,mp in enumerate(rmvpe.midi_pitch):
-        t=i*rmvpe.time_step_seconds
+        t=i*rmvpe.time_step_seconds+time_offset
         while ni+1<len(ns) and ns[ni].offset<=t: ni+=1
         if ni>=len(ns): break
         n=ns[ni]
