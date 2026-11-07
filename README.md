@@ -10,7 +10,7 @@ Vocal2Midi is a desktop tool and inference pipeline for turning vocal audio into
 
 The current runtime is **ONNX-first**:
 
-- `llama.cpp` is used for the Qwen decoder on CPU.
+- `llama.cpp` is used for the Qwen decoder on Metal (Apple Silicon), Vulkan, or CPU.
 - ONNX models default to **DirectML** acceleration and fall back to **CPU** when DirectML is unavailable.
 - The main user-facing entrypoint is the Fluent GUI in [`app_fluent.py`](app_fluent.py).
 
@@ -24,6 +24,8 @@ The current runtime is **ONNX-first**:
 - Smart rhythmic quantization engine with configurable quantization steps
 - Modern Fluent GUI workflow with multi-file batch mode and live dark/light theming
 - Headless batch CLI [`auto_lyric_cli.py`](scripts/auto_lyric_cli.py) and folder slicing CLI [`slice_asr_cli.py`](scripts/slice_asr_cli.py)
+- Hard-sentence repair: rerun one lyric line with different decoding parameters, pick a take, and splice it back into the full-song USTX
+- `f0` / `vuv` reference curves written into USTX so you can see the sung pitch and voicing while hand-editing notes
 - Portable-folder packaging flow for Windows distribution
 - ONNX-based inference stack for ASR, alignment, note extraction, and RMVPE
 
@@ -148,6 +150,7 @@ The GUI is the main way to use Vocal2Midi interactively. It lets you:
 - toggle live UI language and themes
 - provide optional reference lyrics; pasting them infers the target language (kana → Japanese, Hanzi → Chinese, Latin → English)
 - export MIDI, USTX, VSQX, text, CSV, chunk audio, and alignment artifacts
+- repair a hard sentence on the sentence-repair page: pick an LRC line (or a manual time window), sample candidate takes, preview the segment and splice region, then apply a take to the full-song USTX and export `f0`/`vuv` reference curves
 
 The application-layer job entrypoint is run_auto_lyric_job in [`application/pipeline.py`](application/pipeline.py), which dispatches into the hybrid inference pipeline in [`inference/pipeline/auto_lyric_hybrid.py`](inference/pipeline/auto_lyric_hybrid.py).
 
@@ -195,9 +198,12 @@ integration, providing lattice beam-search candidates for TiFA alignment.
   are marked `+`, and melisma notes inside a syllable fall back to `-`.
 - If reference lyrics are provided, they are matched word-by-word against the
   ASR output before alignment.
-- HubertFA aligns through the DiffSinger CMU dict ds_cmudict-07b.txt shipped
-  inside the HubertFA model folder; words missing from the dictionary are warned
-  and skipped.
+- TiFA (default) converts English words with a neural LSTM G2P that loads the same
+  DiffSinger CMU dict (`ds_cmudict-07b.txt`) and beam-searches candidates in
+  `inference/TiFA/g2p_pipeline.py`.
+- HubertFA looks words up directly in the DiffSinger CMU dict
+  (`ds_cmudict-07b.txt`, shipped inside the HubertFA model folder); words missing
+  from the dictionary are warned and skipped.
 
 ### Cantonese
 
@@ -297,10 +303,42 @@ python scripts/auto_lyric_cli.py <input_files_or_dirs...> -o <output_dir> --lang
 - `--no-lyrics` extracts pitch only and skips ASR and alignment entirely.
 - `--lyrics` and `--lyrics-file` provide reference lyrics for alignment.
 - `--language zh|ja|en|yue` with `--lyric-format pinyin|hanzi|romaji|kana|word|jyutping`.
-- `--chinese-asr pinyin|qwen`, `--japanese-asr romaji|qwen`, and `--alignment-engine tifa|hfa` select the engines matching the model config page.
+- `--chinese-asr pinyin|qwen`, `--japanese-asr romaji|qwen`, and `--aligner tifa|hfa` select the engines matching the model config page.
 - A batch of files shares one ASR worker process; a failing file is reported and skipped, and the exit code is 1 if any file failed.
 
+## Sentence Repair and Reference Curves
 
+When the decoder gets a line wrong, rerun only that line with different decoding parameters and
+keep the take you like:
+
+```bash
+python scripts/sentence_gacha.py song.flac --lyrics-file song.lrc \
+  --line 12 --takes 8 --alignments tifa,hfa -o gacha/ \
+  --language ja --lyric-format kana --device dml --tempo 71.7 --pitch-curve
+```
+
+- `--line` / `--sentence` selects an LRC line; `--start`/`--end` selects an arbitrary window instead.
+- `--strategy random|grid|repeat` controls how takes are sampled; `--alignments tifa,hfa` runs both
+  aligners for each take. Diagnostics and a `manifest.json` are written to the output directory.
+- Splice a chosen take back into the full-song export (the window is removed and replaced):
+
+```bash
+python scripts/sentence_gacha.py --apply gacha/ --take tifa-03 --base song.ustx -o song_fixed.ustx
+```
+
+To hand-draw notes on a hard passage, write RMVPE pitch and voicing into an existing USTX as
+masked reference curves:
+
+```bash
+python scripts/sentence_curves.py song.flac --base song.ustx \
+  --lyrics-file song.lrc --line 10 -o song_curves.ustx --device dml
+```
+
+- `f0` is the sung pitch in MIDI x 100 (`6500` = note 65.00); `vuv` marks voiced spans, and gaps
+  mean silence. Select the matching expression in OpenUtau to see them.
+- `--curves f0,vuv` picks which curves to write; with no `--line`/`--start`/`--end` the whole song
+  is processed. `--no-replace` keeps existing curve points inside the target window and only adds
+  values outside it.
 
 ## Windows Setup Scripts
 

@@ -102,10 +102,10 @@
 
 ### D. 对齐鲁棒性（直接止住“填词打乱”）
 
-- **原词优先**：有原词时 FA 文本直接用原词分词。目前 TiFA 读的是 ASR 文本（`inference/API/lfa_api.py:330` 写 `.txt`），一旦漏检就整体移位；改成原词驱动后，漏检只影响边界精度，不影响序列。
+- **原词优先**：有原词时 FA 文本直接用原词分词。目前 TiFA 读的是 ASR 文本（`inference/API/lfa_api.py:327-395` 写 `.txt`），一旦漏检就整体移位；改成原词驱动后，漏检只影响边界精度，不影响序列。
 - **插入容忍的对齐**：matcher 用显式 Needleman–Wunsch，删除代价高于替换代价，缺 mora 时插位而非左移。
 - **索引不漂**：`inference/game/alignment_utils.py:76` 在 note 数 < 词数时，按 FA mora 时长补零长 rest 占位（`assign_by_onset` 分支已有类似思路），避免后续歌词整段前移。
-- **note 优先，不因词缺而吞音**：note 数 > 词数时，多出来的 GAME note 应并入相邻同音单元或标为无词延续，而不是整条丢弃；`cl` 这类非音节 token（§6.1 实测出现在 ASR 输出里）不占音节槽位。当前 `alignment_utils.py:212-214` 的 rest 兜底 + `game_api.py:484-498` 的一词一单元正好是反过来的。
+- **note 优先，不因词缺而吞音**：note 数 > 词数时，多出来的 GAME note 应并入相邻同音单元或标为无词延续，而不是整条丢弃；`cl` 这类非音节 token（§6.1 实测出现在 ASR 输出里）不占音节槽位。当前 `alignment_utils.py:128-146` 的 rest 兜底 + `game_api.py:263-330` 的一词一单元正好是反过来的。
 - **可核对的诊断**：每个 region 把“修复前后 mora 数、note 数、抬升 dB、判定依据”写进 `chunk_logs`，用户能直接看到改了哪里。
 
 ## 5. 分期与验收
@@ -158,7 +158,7 @@
 3. **GAME 也没有漏。** 同样 49–55 s、默认参数，输出 19 个 note，其中 `52.27 +0.230 pitch=63.99`（E4）和 `52.69 +0.440 pitch=63.99` 两个音，分裂点正好落在上面那 0.14 s 的去回声空洞上。
 4. **最终 USTX 里这两个音都没了。** 导出结果从 `51.90 +0.291 tone=55 'mo'` 直接跳到 `52.69 +0.440 tone=64 'te'`。
 
-所以这条句子既不能靠换 stem 修，也不能靠抬增益修。丢音发生在 **HFA 词 ↔ GAME note 的配对**上：这一窗有 3 个 mora（`i / o / cl`）但只有 2 个 note，`inference/game/alignment_utils.py:212-214` 对没有任何 note 重叠的词直接补 `rest`，而 `game_api.py` 的歌词循环每个输出单元消耗一个词（`inference/API/game_api.py:484-498`），`cl` 这种非音节 token 又占掉一个位置——两边一错位，`52.27` 那个 E4 就被吞掉了。
+所以这条句子既不能靠换 stem 修，也不能靠抬增益修。丢音发生在 **HFA 词 ↔ GAME note 的配对**上：这一窗有 3 个 mora（`i / o / cl`）但只有 2 个 note，`inference/game/alignment_utils.py:128-146` 对没有任何 note 重叠的词直接补 `rest`，而 `game_api.py` 的歌词循环每个输出单元消耗一个词（`inference/API/game_api.py:263-330`），`cl` 这种非音节 token 又占掉一个位置——两边一错位，`52.27` 那个 E4 就被吞掉了。
 
 结论：缺音至少有两类，判据和修法都不同。
 

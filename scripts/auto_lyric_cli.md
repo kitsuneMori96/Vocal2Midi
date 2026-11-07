@@ -1,9 +1,10 @@
 # Auto Lyric CLI
 
 `scripts/auto_lyric_cli.py` is Vocal2Midi's headless mode: it runs the full
-extraction pipeline — slicing, ASR (Qwen3 / PinyinASR / RomajiASR), HubertFA
-alignment, GAME note extraction, quantization — from the command line and
-writes MIDI/USTX/VSQX/text outputs, with no GUI involved.
+extraction pipeline — slicing, ASR (Qwen3 / PinyinASR / RomajiASR), forced
+alignment (TiFA by default, HubertFA selectable), GAME note extraction,
+quantization — from the command line and writes MIDI/USTX/VSQX/text outputs,
+with no GUI involved.
 
 The CLI mirrors the GUI: every option defaults to the value saved by the GUI
 settings pages, and any flag you pass explicitly overrides that default.
@@ -17,7 +18,7 @@ python scripts/auto_lyric_cli.py song.wav
 # Whole folder, batch, MIDI + USTX with pitch curve
 python scripts/auto_lyric_cli.py D:\\songs -o D:\\out --language zh --formats mid ustx --pitch-curve
 
-# Pitch only, no lyrics (skips ASR/HFA entirely, fastest path)
+# Pitch only, no lyrics (skips ASR/alignment entirely, fastest path)
 python scripts/auto_lyric_cli.py song.wav --no-lyrics --formats mid
 
 # Japanese song with reference lyrics for alignment
@@ -53,11 +54,11 @@ same fallback the GUI uses applies.
 
 | Option | Description |
 |---|---|
-| `--language {zh,ja,en}` | Lyric language. Default `zh`. A batch runs in one language; split mixed-language folders into separate runs. |
-| `--lyric-format {pinyin,hanzi,romaji,kana,word}` | Lyric output format. Default: the GUI setting for the language. Must be valid for the language (see matrix below) or the CLI exits with an error. |
+| `--language {zh,ja,en,yue}` | Lyric language. Default `zh`. A batch runs in one language; split mixed-language folders into separate runs. |
+| `--lyric-format {pinyin,hanzi,romaji,kana,word,jyutping}` | Lyric output format. Default: the GUI setting for the language. Must be valid for the language (see matrix below) or the CLI exits with an error. |
 | `--lyrics TEXT` | Reference lyrics inline (improves alignment accuracy). |
 | `--lyrics-file PATH` | Reference lyrics from a UTF-8 text file (overrides `--lyrics`). |
-| `--no-lyrics` | Pitch-only mode: ASR and HFA are skipped entirely and outputs contain no lyrics. Cannot be combined with `--lyrics`/`--lyrics-file`. |
+| `--no-lyrics` | Pitch-only mode: ASR and alignment are skipped entirely and outputs contain no lyrics. Cannot be combined with `--lyrics`/`--lyrics-file`. |
 
 Valid lyric formats per language:
 
@@ -66,6 +67,7 @@ Valid lyric formats per language:
 | `zh` | `pinyin`, `hanzi` | `hanzi` |
 | `ja` | `romaji`, `kana` | `romaji` |
 | `en` | `word` | `word` |
+| `yue` | `jyutping`, `hanzi` | `hanzi` |
 
 ## ASR engines
 
@@ -73,6 +75,7 @@ Valid lyric formats per language:
 |---|---|
 | `--chinese-asr {pinyin,qwen}` | `pinyin` runs the direct PinyinASR phoneme model (output is locked to pinyin — choosing `hanzi` emits a warning and the pipeline falls back to pinyin); `qwen` runs text ASR + G2P. |
 | `--japanese-asr {romaji,qwen}` | `romaji` runs the direct RomajiASR mora model; `qwen` runs text ASR + Japanese G2P. |
+| `--japanese-g2p {kashi-g2p-onnx,pyopenjtalk}` | Japanese G2P engine: `kashi-g2p-onnx` (default; lattice beam-search candidates for TiFA) or `pyopenjtalk`. |
 | `--aligner {tifa,hfa}` | Forced-alignment engine: `tifa` runs the TiFA aligner (audio + raw ASR text, built-in G2P with polyphone disambiguation); `hfa` runs HubertFA on the phoneme sequence. Default: the GUI setting, `tifa`. |
 
 Both default to the model config page's engine selection. The engine not in
@@ -140,6 +143,7 @@ is respawned automatically.
 | `--asr-model` | `models/Qwen3-ASR-1.7B-dml` |
 | `--phoneme-asr-model` | `models/romajiASR` |
 | `--pinyin-asr-model` | `models/pinyinASR` |
+| `--kashi-g2p-model` | `models/kashi-g2p-onnx` |
 | `--rmvpe-model` | `models/RMVPE` |
 
 Only the paths required by the selected language, engines and output formats
@@ -163,4 +167,8 @@ are validated, so a missing RomajiASR model does not block a Chinese run.
 
 - `scripts/slice_asr_cli.py` — the older batch CLI focused on slicing + raw
   ASR text extraction (no alignment/GAME/notation outputs).
+- `scripts/sentence_gacha.py` — rerun one lyric line with a parameter grid and
+  splice a chosen take into a full-song USTX.
+- `scripts/sentence_curves.py` — write `f0`/`vuv` reference curves into an
+  existing USTX for hand-editing.
 - `README.md` — GUI overview and setup.
