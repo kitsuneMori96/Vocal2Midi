@@ -275,9 +275,19 @@ For passages the decoder gets wrong, the pipeline can be rerun on a single lyric
   window, build a grid of decoding parameters (`TakeParams`), run the takes, diagnose each
   result, write reports/manifests, and `splice_take_into_ustx()` to merge a chosen take back
   into a full-song export.
-- `application/sentence_jobs.py` — GUI/CLI-shared jobs, including `export_reference_curves()`.
+- `application/sentence_jobs.py` — GUI/CLI-shared jobs: `export_reference_curves()`,
+  `splice_take_with_handshake()` (in-place patch with a rolling `<stem>_backup.ustx`),
+  `bar_beat_label()` for OpenUtau-style positions.
+- `application/openutau_bridge.py` — find the running OpenUtau instance (process snapshot →
+  data dir → `prefs.json` recents), default the base USTX to its open project, and run the
+  save handshake in `<DataPath>/v2m-bridge/` (`save-request.json` → `save-response.json`).
+  Patch aborts instead of overwriting when a running instance cannot save.
 - `gui/sentence_repair_view.py` — the interactive page for the same flow.
 - `scripts/sentence_gacha.py`, `scripts/sentence_curves.py` — CLI frontends.
+
+The reload side lives in the OpenUtau fork (`feat/v2m-bridge`, `OpenUtau/Util/V2mBridge.cs`):
+it answers save requests on the UI thread and watches the open project file, silently
+reloading when it changes externally (clean document) or prompting when edits are unsaved.
 
 ## Runtime and cancellation behavior
 

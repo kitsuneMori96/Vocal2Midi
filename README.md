@@ -320,11 +320,19 @@ python scripts/sentence_gacha.py song.flac --lyrics-file song.lrc \
 - `--line` / `--sentence` selects an LRC line; `--start`/`--end` selects an arbitrary window instead.
 - `--strategy random|grid|repeat` controls how takes are sampled; `--alignments tifa,hfa` runs both
   aligners for each take. Diagnostics and a `manifest.json` are written to the output directory.
-- Splice a chosen take back into the full-song export (the window is removed and replaced):
+- Splice a chosen take back into the full-song export:
 
 ```bash
 python scripts/sentence_gacha.py --apply gacha/ --take tifa-03 --base song.ustx -o song_fixed.ustx
 ```
+
+- Point `-o` at the base file itself to patch in place. If a running OpenUtau instance has that
+  project open, it is asked to save first (the patch aborts rather than clobber unsaved edits),
+  the file is replaced atomically with a rolling `<stem>_backup.ustx`, and a bridged OpenUtau
+  build reloads the piano roll automatically.
+- The GUI's hard-sentence page prefills the base with the project OpenUtau currently has open,
+  labels each timestamped lyric line with its OpenUtau bar number, and applies takes to that
+  live project.
 
 To hand-draw notes on a hard passage, write RMVPE pitch and voicing into an existing USTX as
 masked reference curves:

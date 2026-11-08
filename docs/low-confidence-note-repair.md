@@ -316,7 +316,8 @@ GUI（2026-11-06）：Windows 与 macOS 两套外壳都新增「难句精修」�
 
 - 输入音频 / LRC / 底稿 USTX；解析歌词后按 `行号  起-止  文本` 列出目标行，并从歌词内容自动推断语言（复用 `gui/lyric_language.py`，LRC 元信息不参与判断）；底稿的 tempo 自动读入。无时间戳的纯文本歌词需手填起止秒数。
 - 抽卡面板：策略（随机 / 网格 / 重复）、每组数量、随机种子、TiFA / HubertFA 勾选；窗口 = 行区间 ± 前导/尾部，或手填起止，页面实时显示「片段 + 拼接区」。
-- 结果表列 `Take / 对齐 / 音符 / 最短 / 碎片 / 重复音 / 标记分 / 歌词序列`；选中候选后「应用选中候选」用 manifest 的 `splice_range` 写 `<base>_patched.ustx`，只替换拼接区，pitd 与已有曲线原样保留。
+- 结果表列 `Take / 对齐 / 音符 / 最短 / 碎片 / 重复音 / 标记分 / 歌词序列`；选中候选后「应用选中候选」用 manifest 的 `splice_range` 就地写回底稿，只替换拼接区，pitd 与已有曲线原样保留，旧底稿滚动备份为 `<base>_backup.ustx`。写回前若 OpenUtau 正开着该工程，先按 `v2m-bridge/` 握手请求保存并等待确认；无桥接或超时则中止，不覆盖未保存改动。
+- 底稿默认取 OpenUtau 当前打开的工程（进程定位数据目录 → `prefs.json` 最近文件），LRC 行下拉显示 `行号  小节.拍  起-止  文本`，小节号按底稿的 tempo / 拍号换算，与 OpenUtau 标尺一致。
 - 「导出参考曲线」与 CLI 共用 `application/sentence_jobs.export_reference_curves`，写 `<base>_curves.ustx`（f0 + vuv）。
 - 长任务在 `FunctionWorker`（`gui/fluent_worker.py`）里执行，复用主流程的 stdout/logging 捕获；两套外壳的关闭流程会先停掉主页面与本页的 worker。
 
