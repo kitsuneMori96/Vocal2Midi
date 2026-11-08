@@ -125,8 +125,9 @@ def build_argparser(defaults: dict) -> argparse.ArgumentParser:
                              help="Gacha output dir: splice a chosen take into --base")
     apply_group.add_argument("--take", default=None, help="Take label to splice (e.g. tifa-03)")
     apply_group.add_argument("--reference", action="store_true",
-                             help="Add the take as a muted reference track (reusing the first track's "
-                                  "singer/phonemizer) instead of replacing notes")    apply_group.add_argument("--base", type=Path, default=None,
+                             help="Add the take as an audible reference track (reusing the first track's "
+                                  "singer/phonemizer) and mute the main track instead of replacing notes")
+    apply_group.add_argument("--base", type=Path, default=None,
                              help="Full-song USTX to patch; set -o to the same path to patch in place "
                                   "(a running OpenUtau saves first, then reloads the file)")
     return parser
@@ -177,7 +178,7 @@ def _run_apply(args) -> int:
             )
             logger.info(
                 f"Added reference track for {args.take} into {out_path} "
-                f"({window[0]:.3f}-{window[1]:.3f}s, {inserted} notes, muted)."
+                f"({window[0]:.3f}-{window[1]:.3f}s, {inserted} notes; main track muted)."
             )
             return 0
         removed, inserted = splice_take_with_handshake(args.base, take_path, out_path, window)

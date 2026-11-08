@@ -62,7 +62,8 @@ def test_reference_track_in_place_keeps_backup(tmp_path, monkeypatch):
 
     patched = yaml.safe_load(base.read_text(encoding="utf-8"))
     assert [n["lyric"] for n in patched["voice_parts"][0]["notes"]] == ["ど", "my"]
-    assert patched["tracks"][1]["mute"] is True
+    assert patched["tracks"][0]["mute"] is True
+    assert patched["tracks"][1]["mute"] is False
     assert patched["tracks"][1]["track_name"] == "V2M参考 tifa-01"
     backup = yaml.safe_load((tmp_path / "song_backup.ustx").read_text(encoding="utf-8"))
     assert len(backup["tracks"]) == 1

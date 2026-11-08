@@ -257,8 +257,8 @@ _STRINGS: dict[str, dict[str, str]] = {
     "repair_apply": {"zh": "应用选中候选", "en": "Apply Selected"},
     "repair_reference": {"zh": "作为参照加入工程", "en": "Add as Reference"},
     "repair_reference_added": {
-        "zh": "已新增静音参考轨「{track}」（{inserted} 个音符）→ {path}；原音符未改动，双击参考片段可试听、复制挑选",
-        "en": "Added muted reference track \"{track}\" ({inserted} notes) → {path}; your notes are untouched — open the part to audition and copy from it",
+        "zh": "已新增参考轨「{track}」（{inserted} 个音符）→ {path}；主轨已静音，取消主轨静音即可 A/B 对比，双击参考片段可复制挑选",
+        "en": "Added reference track \"{track}\" ({inserted} notes) → {path}; the main track is muted — unmute it to A/B compare, open the reference part to cherry-pick",
     },
     "repair_open_dir": {"zh": "打开输出目录", "en": "Open Output Folder"},
     "repair_gacha_done": {"zh": "抽卡完成，共 {n} 个候选", "en": "Gacha finished with {n} candidate(s)"},

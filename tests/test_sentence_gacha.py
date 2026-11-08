@@ -187,7 +187,7 @@ def test_splice_replaces_only_window_notes(tmp_path):
     assert onsets == pytest.approx([1.0, 2.1, 3.0, 4.5], abs=0.005)
 
 
-def test_reference_take_adds_muted_track_and_keeps_notes(tmp_path):
+def test_reference_take_mutes_main_track_and_keeps_notes(tmp_path):
     base_path = tmp_path / "base.ustx"
     take_path = tmp_path / "take.ustx"
     _write_ustx(base_path, [
@@ -208,9 +208,10 @@ def test_reference_take_adds_muted_track_and_keeps_notes(tmp_path):
     result = yaml.safe_load(out_path.read_text(encoding="utf-8"))
     assert [note["lyric"] for note in result["voice_parts"][0]["notes"]] == ["ど", "な", "て"]
     assert len(result["tracks"]) == 2
+    assert result["tracks"][0]["mute"] is True
     reference_track = result["tracks"][1]
     assert reference_track["track_name"] == "V2M参考 tifa-01"
-    assert reference_track["mute"] is True
+    assert reference_track["mute"] is False
     assert reference_track["phonemizer"] == result["tracks"][0]["phonemizer"]
     reference_part = result["voice_parts"][1]
     assert reference_part["track_no"] == 1

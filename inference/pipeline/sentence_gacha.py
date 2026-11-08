@@ -660,11 +660,11 @@ def add_reference_take_into_ustx(
     window: tuple[float, float],
     track_name: str,
 ) -> int:
-    """Append the take's window notes as a muted reference track.
+    """Append the take's window notes as an audible reference track.
 
-    The new track reuses the first track's singer and phonemizer so the take
-    can be auditioned against the user's own notes; existing tracks, notes and
-    curves are untouched. Returns the inserted note count.
+    The new track reuses the first track's singer and phonemizer and the main
+    track is muted so the take is heard immediately; existing notes and curves
+    are untouched. Returns the inserted note count.
     """
     base = yaml.safe_load(base_ustx.read_text(encoding="utf-8"))
     take = yaml.safe_load(take_ustx.read_text(encoding="utf-8"))
@@ -680,8 +680,10 @@ def add_reference_take_into_ustx(
 
     reference_track = dict(tracks[0])
     reference_track["track_name"] = track_name
-    reference_track["mute"] = True
+    reference_track["mute"] = False
     reference_track["solo"] = False
+    # The user adds a reference to listen to it, so the main track yields.
+    tracks[0]["mute"] = True
     base["tracks"].append(reference_track)
 
     notes = []

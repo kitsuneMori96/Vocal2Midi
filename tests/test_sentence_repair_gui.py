@@ -156,7 +156,7 @@ def test_apply_selected_splices_take(page, tmp_path, monkeypatch):
     assert "old" in [note["lyric"] for note in backup["voice_parts"][0]["notes"]]
 
 
-def test_add_reference_selected_appends_muted_track(page, tmp_path, monkeypatch):
+def test_add_reference_selected_mutes_main_track(page, tmp_path, monkeypatch):
     monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
     base = tmp_path / "song.ustx"
     base.write_text(
@@ -194,8 +194,9 @@ def test_add_reference_selected_appends_muted_track(page, tmp_path, monkeypatch)
     patched = yaml.safe_load(base.read_text(encoding="utf-8"))
     assert [note["lyric"] for note in patched["voice_parts"][0]["notes"]] == ["a", "old", "b"]
     assert [note["lyric"] for note in patched["voice_parts"][1]["notes"]] == ["new", "new2"]
+    assert patched["tracks"][0]["mute"] is True
     assert patched["tracks"][1]["track_name"] == "V2M参考 tifa-01"
-    assert patched["tracks"][1]["mute"] is True
+    assert patched["tracks"][1]["mute"] is False
 
 
 def test_apply_without_selection_warns(page, tmp_path):
