@@ -333,6 +333,13 @@ python scripts/sentence_gacha.py --apply gacha/ --take tifa-03 --base song.ustx 
 - The GUI's hard-sentence page prefills the base with the project OpenUtau currently has open,
   labels each timestamped lyric line with its OpenUtau bar number, and applies takes to that
   live project.
+- `--reference` (GUI: "Add as Reference") leaves every existing note alone and appends the take
+  as a muted track that reuses the first track's singer and phonemizer — audition it against
+  your own edit and copy the notes you like:
+
+```bash
+python scripts/sentence_gacha.py --apply gacha/ --take tifa-03 --base song.ustx -o song.ustx --reference
+```
 
 To hand-draw notes on a hard passage, write RMVPE pitch and voicing into an existing USTX as
 masked reference curves:

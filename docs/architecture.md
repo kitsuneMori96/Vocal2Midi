@@ -273,11 +273,12 @@ For passages the decoder gets wrong, the pipeline can be rerun on a single lyric
 
 - `inference/pipeline/sentence_gacha.py` — parse timestamped lyric lines, resolve the audio
   window, build a grid of decoding parameters (`TakeParams`), run the takes, diagnose each
-  result, write reports/manifests, and `splice_take_into_ustx()` to merge a chosen take back
-  into a full-song export.
+  result, write reports/manifests, `splice_take_into_ustx()` to replace a window in a full-song
+  export, and `add_reference_take_into_ustx()` to append a take as a muted reference track that
+  clones the first track's singer/phonemizer (for cherry-picking after manual edits).
 - `application/sentence_jobs.py` — GUI/CLI-shared jobs: `export_reference_curves()`,
-  `splice_take_with_handshake()` (in-place patch with a rolling `<stem>_backup.ustx`),
-  `bar_beat_label()` for OpenUtau-style positions.
+  `splice_take_with_handshake()` and `add_reference_take_with_handshake()` (in-place write with
+  a rolling `<stem>_backup.ustx`), `bar_beat_label()` for OpenUtau-style positions.
 - `application/openutau_bridge.py` — find the running OpenUtau instance (process snapshot →
   data dir → `prefs.json` recents), default the base USTX to its open project, and run the
   save handshake in `<DataPath>/v2m-bridge/` (`save-request.json` → `save-response.json`).

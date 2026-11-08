@@ -325,6 +325,10 @@ class SentenceRepairInterface(ScrollArea):
         self._bind_tr(lambda: self.btn_apply.setText(tr("repair_apply")))
         self.btn_apply.clicked.connect(self.apply_selected)
         row.addWidget(self.btn_apply)
+        self.btn_reference = PushButton(tr("repair_reference"), self, FluentIcon.MUSIC)
+        self._bind_tr(lambda: self.btn_reference.setText(tr("repair_reference")))
+        self.btn_reference.clicked.connect(self.add_reference_selected)
+        row.addWidget(self.btn_reference)
         self.btn_open_dir = PushButton(tr("repair_open_dir"), self, FluentIcon.FOLDER)
         self._bind_tr(lambda: self.btn_open_dir.setText(tr("repair_open_dir")))
         self.btn_open_dir.clicked.connect(self.open_output_dir)
@@ -631,7 +635,7 @@ class SentenceRepairInterface(ScrollArea):
         return True
 
     def _set_running_ui(self, running: bool):
-        for button in (self.btn_gacha, self.btn_curves, self.btn_apply):
+        for button in (self.btn_gacha, self.btn_curves, self.btn_apply, self.btn_reference):
             button.setEnabled(not running)
         self.btn_stop.setEnabled(running)
         self.progress_ring.setVisible(running)
@@ -845,46 +849,79 @@ class SentenceRepairInterface(ScrollArea):
             self.results_table.selectRow(0)
 
     def apply_selected(self):
+        selected = self._resolve_selected_take()
+        if selected is None:
+            return
+        from application.sentence_jobs import splice_take_with_handshake
+
+        label, take_path, window = selected
+        try:
+            removed, inserted = splice_take_with_handshake(self._job_base, take_path, self._job_base, window)
+        except Exception as error:  # noqa: BLE001
+            if self._report_save_error(error):
+                return
+            self._show_error(tr("fail_title"), str(error))
+            return
+        self._show_success(
+            tr("repair_applied", take=label, removed=removed, inserted=inserted, path=self._job_base)
+        )
+
+    def add_reference_selected(self):
+        selected = self._resolve_selected_take()
+        if selected is None:
+            return
+        from application.sentence_jobs import add_reference_take_with_handshake
+
+        label, take_path, window = selected
+        track_name = f"V2M参考 {label}"
+        try:
+            inserted = add_reference_take_with_handshake(
+                self._job_base, take_path, self._job_base, window, track_name
+            )
+        except Exception as error:  # noqa: BLE001
+            if self._report_save_error(error):
+                return
+            self._show_error(tr("fail_title"), str(error))
+            return
+        self._show_success(
+            tr("repair_reference_added", track=track_name, inserted=inserted, path=self._job_base)
+        )
+
+    def _resolve_selected_take(self):
         if self.is_running():
             self._show_warning(tr("repair_busy"))
-            return
+            return None
         row = self.results_table.currentRow()
         if row < 0 or row >= len(self._take_labels):
             self._show_warning(tr("repair_select_take"))
-            return
+            return None
         manifest = self._last_manifest
         if not manifest or self._job_base is None or self._job_output_dir is None:
             self._show_warning(tr("repair_no_results"))
-            return
-        from application.openutau_bridge import OpenUtauSaveError
-        from application.sentence_jobs import splice_take_with_handshake
-
+            return None
         label = self._take_labels[row]
         entry = next((item for item in manifest["takes"] if item["take"] == label), None)
         if entry is None:
             self._show_error(tr("fail_title"), tr("repair_no_results"))
-            return
+            return None
         take_path = pathlib.Path(self._job_output_dir) / entry["ustx"]
         window = (
             float(manifest.get("splice_start", manifest["window_start"])),
             float(manifest.get("splice_end", manifest["window_end"])),
         )
-        out_path = self._job_base
-        try:
-            removed, inserted = splice_take_with_handshake(self._job_base, take_path, out_path, window)
-        except OpenUtauSaveError as error:
-            key = {
-                "no-bridge": "repair_openutau_no_bridge",
-                "declined": "repair_openutau_save_failed",
-            }.get(error.reason, "repair_openutau_save_timeout")
-            self._show_warning(tr(key))
-            return
-        except Exception as error:  # noqa: BLE001
-            self._show_error(tr("fail_title"), str(error))
-            return
-        self._show_success(
-            tr("repair_applied", take=label, removed=removed, inserted=inserted, path=out_path)
-        )
+        return label, take_path, window
+
+    def _report_save_error(self, error) -> bool:
+        from application.openutau_bridge import OpenUtauSaveError
+
+        if not isinstance(error, OpenUtauSaveError):
+            return False
+        key = {
+            "no-bridge": "repair_openutau_no_bridge",
+            "declined": "repair_openutau_save_failed",
+        }.get(error.reason, "repair_openutau_save_timeout")
+        self._show_warning(tr(key))
+        return True
 
     def open_output_dir(self):
         path = self.output_edit.text().strip()

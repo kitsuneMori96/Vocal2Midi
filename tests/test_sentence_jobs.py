@@ -1,6 +1,6 @@
 import yaml
 
-from application.sentence_jobs import splice_take_with_handshake
+from application.sentence_jobs import add_reference_take_with_handshake, splice_take_with_handshake
 from inference.io.note_io import NoteInfo
 from inference.API.ustx_api import save_ustx
 
@@ -47,6 +47,25 @@ def test_in_place_patch_aborts_without_save_ack(tmp_path, monkeypatch):
         pass
     assert base.read_text(encoding="utf-8") == before
     assert not (tmp_path / "song_backup.ustx").exists()
+
+
+def test_reference_track_in_place_keeps_backup(tmp_path, monkeypatch):
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    base = _write_ustx(tmp_path / "song.ustx", [
+        NoteInfo(1.0, 1.5, 60.0, "ど"),
+        NoteInfo(2.2, 2.6, 62.0, "my"),
+    ])
+    take = _write_ustx(tmp_path / "take.ustx", [NoteInfo(2.1, 2.4, 65.0, "ref")])
+
+    inserted = add_reference_take_with_handshake(base, take, base, (2.0, 4.0), "V2M参考 tifa-01")
+    assert inserted == 1
+
+    patched = yaml.safe_load(base.read_text(encoding="utf-8"))
+    assert [n["lyric"] for n in patched["voice_parts"][0]["notes"]] == ["ど", "my"]
+    assert patched["tracks"][1]["mute"] is True
+    assert patched["tracks"][1]["track_name"] == "V2M参考 tifa-01"
+    backup = yaml.safe_load((tmp_path / "song_backup.ustx").read_text(encoding="utf-8"))
+    assert len(backup["tracks"]) == 1
 
 
 def test_separate_output_skips_handshake(tmp_path, monkeypatch):

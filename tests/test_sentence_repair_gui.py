@@ -38,6 +38,18 @@ def _ustx(bpm, notes, resolution=480):
         "resolution": resolution,
         "bpm": bpm,
         "tempos": [{"position": 0, "bpm": bpm}],
+        "tracks": [{
+            "phonemizer": "OpenUtau.Core.DefaultPhonemizer",
+            "renderer_settings": {},
+            "track_name": "Track1",
+            "track_color": "Blue",
+            "mute": False,
+            "solo": False,
+            "volume": 0,
+            "pan": 0,
+            "track_expressions": [],
+            "voice_color_names": [""],
+        }],
         "voice_parts": [{
             "position": 0,
             "duration": 4800,
@@ -142,6 +154,48 @@ def test_apply_selected_splices_take(page, tmp_path, monkeypatch):
     assert notes == sorted(notes, key=lambda note: note["position"])
     backup = yaml.safe_load((tmp_path / "song_backup.ustx").read_text(encoding="utf-8"))
     assert "old" in [note["lyric"] for note in backup["voice_parts"][0]["notes"]]
+
+
+def test_add_reference_selected_appends_muted_track(page, tmp_path, monkeypatch):
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    base = tmp_path / "song.ustx"
+    base.write_text(
+        yaml.safe_dump(_ustx(120.0, [
+            {"position": 0, "duration": 480, "lyric": "a"},
+            {"position": 12000, "duration": 480, "lyric": "old"},
+            {"position": 15000, "duration": 480, "lyric": "b"},
+        ])),
+        encoding="utf-8",
+    )
+    take = tmp_path / "tifa-01.ustx"
+    take.write_text(
+        yaml.safe_dump(_ustx(120.0, [
+            {"position": 10500, "duration": 240, "lyric": "new"},
+            {"position": 11000, "duration": 240, "lyric": "new2"},
+        ])),
+        encoding="utf-8",
+    )
+
+    page._job_base = base
+    page._job_output_dir = tmp_path
+    page._last_manifest = {
+        "window_start": 9.5,
+        "window_end": 15.3,
+        "splice_start": 10.0,
+        "splice_end": 15.0,
+        "takes": [{"take": "tifa-01", "ustx": take.name}],
+    }
+    page._take_labels = ["tifa-01"]
+    page.results_table.insertRow(0)
+    page.results_table.selectRow(0)
+
+    page.add_reference_selected()
+
+    patched = yaml.safe_load(base.read_text(encoding="utf-8"))
+    assert [note["lyric"] for note in patched["voice_parts"][0]["notes"]] == ["a", "old", "b"]
+    assert [note["lyric"] for note in patched["voice_parts"][1]["notes"]] == ["new", "new2"]
+    assert patched["tracks"][1]["track_name"] == "V2M参考 tifa-01"
+    assert patched["tracks"][1]["mute"] is True
 
 
 def test_apply_without_selection_warns(page, tmp_path):

@@ -45,32 +45,56 @@ def bar_beat_label(seconds: float, header: dict) -> str:
     return f"{bar}.{int(beat)}"
 
 
-def splice_take_with_handshake(
-    base_path, take_path, out_path, window: tuple[float, float], *, save_timeout: float = 10.0
-) -> tuple[int, int]:
-    """Splice a take into a USTX, syncing with a running OpenUtau when in place.
+def _patch_ustx(base_path, out_path, transform, *, save_timeout: float = 10.0):
+    """Run a USTX transform, syncing with a running OpenUtau when in place.
 
     Writing to the base file itself first asks OpenUtau to save and waits for
-    its ack (OpenUtauSaveError when it cannot), then patches atomically and
+    its ack (OpenUtauSaveError when it cannot), then writes atomically and
     keeps a rolling backup at <stem>_backup.ustx. Any other output path leaves
     the base untouched and needs no handshake.
     """
     from application.openutau_bridge import request_save
-    from inference.pipeline.sentence_gacha import splice_take_into_ustx
 
     base_path = Path(base_path)
     out_path = Path(out_path)
     if out_path.resolve() != base_path.resolve():
-        return splice_take_into_ustx(base_path, take_path, out_path, window)
+        return transform(base_path, out_path)
     request_save(base_path, timeout=save_timeout)
     tmp = base_path.with_name(base_path.stem + ".v2m-tmp.ustx")
     try:
-        removed, inserted = splice_take_into_ustx(base_path, take_path, tmp, window)
+        result = transform(base_path, tmp)
         shutil.copy2(base_path, base_path.with_name(base_path.stem + "_backup.ustx"))
         os.replace(tmp, base_path)
     finally:
         tmp.unlink(missing_ok=True)
-    return removed, inserted
+    return result
+
+
+def splice_take_with_handshake(
+    base_path, take_path, out_path, window: tuple[float, float], *, save_timeout: float = 10.0
+) -> tuple[int, int]:
+    """Replace base notes in the window with the take, syncing when in place."""
+    from inference.pipeline.sentence_gacha import splice_take_into_ustx
+
+    return _patch_ustx(
+        base_path, out_path,
+        lambda base, out: splice_take_into_ustx(base, take_path, out, window),
+        save_timeout=save_timeout,
+    )
+
+
+def add_reference_take_with_handshake(
+    base_path, take_path, out_path, window: tuple[float, float], track_name: str,
+    *, save_timeout: float = 10.0,
+) -> int:
+    """Add the take as a muted reference track, syncing when written in place."""
+    from inference.pipeline.sentence_gacha import add_reference_take_into_ustx
+
+    return _patch_ustx(
+        base_path, out_path,
+        lambda base, out: add_reference_take_into_ustx(base, take_path, out, window, track_name),
+        save_timeout=save_timeout,
+    )
 
 
 def export_reference_curves(

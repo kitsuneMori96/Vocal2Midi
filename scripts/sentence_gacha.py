@@ -124,7 +124,9 @@ def build_argparser(defaults: dict) -> argparse.ArgumentParser:
     apply_group.add_argument("--apply", type=Path, default=None,
                              help="Gacha output dir: splice a chosen take into --base")
     apply_group.add_argument("--take", default=None, help="Take label to splice (e.g. tifa-03)")
-    apply_group.add_argument("--base", type=Path, default=None,
+    apply_group.add_argument("--reference", action="store_true",
+                             help="Add the take as a muted reference track (reusing the first track's "
+                                  "singer/phonemizer) instead of replacing notes")    apply_group.add_argument("--base", type=Path, default=None,
                              help="Full-song USTX to patch; set -o to the same path to patch in place "
                                   "(a running OpenUtau saves first, then reloads the file)")
     return parser
@@ -132,7 +134,7 @@ def build_argparser(defaults: dict) -> argparse.ArgumentParser:
 
 def _run_apply(args) -> int:
     from application.openutau_bridge import OpenUtauSaveError
-    from application.sentence_jobs import splice_take_with_handshake
+    from application.sentence_jobs import add_reference_take_with_handshake, splice_take_with_handshake
     from inference.pipeline.sentence_gacha import load_manifest
 
     if not args.take:
@@ -169,6 +171,15 @@ def _run_apply(args) -> int:
     if out_path.suffix.lower() != ".ustx":
         out_path = out_path / f"{args.base.stem}_patched.ustx"
     try:
+        if args.reference:
+            inserted = add_reference_take_with_handshake(
+                args.base, take_path, out_path, window, f"V2M参考 {args.take}"
+            )
+            logger.info(
+                f"Added reference track for {args.take} into {out_path} "
+                f"({window[0]:.3f}-{window[1]:.3f}s, {inserted} notes, muted)."
+            )
+            return 0
         removed, inserted = splice_take_with_handshake(args.base, take_path, out_path, window)
     except OpenUtauSaveError as error:
         if error.reason == "no-bridge":

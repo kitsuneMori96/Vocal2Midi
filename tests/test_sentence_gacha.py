@@ -8,6 +8,7 @@ from inference.LyricFA.tools.lyric_matcher import strip_lrc_markup
 from inference.io.note_io import NoteInfo
 from inference.pipeline.sentence_gacha import (
     _note_diagnostics,
+    add_reference_take_into_ustx,
     build_takes,
     clip_lyrics_for_window,
     load_manifest,
@@ -184,6 +185,36 @@ def test_splice_replaces_only_window_notes(tmp_path):
     assert part["curves"] == [{"abbr": "pitd", "xs": [0, 480], "ys": [0, 10]}]
     onsets = [note["position"] / patched["resolution"] * 60.0 / patched["bpm"] for note in part["notes"]]
     assert onsets == pytest.approx([1.0, 2.1, 3.0, 4.5], abs=0.005)
+
+
+def test_reference_take_adds_muted_track_and_keeps_notes(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    _write_ustx(base_path, [
+        NoteInfo(1.0, 1.5, 60.0, "ど"),
+        NoteInfo(2.2, 2.6, 62.0, "な"),
+        NoteInfo(4.5, 5.0, 64.0, "て"),
+    ])
+    _write_ustx(take_path, [
+        NoteInfo(2.1, 2.4, 65.0, "な"),
+        NoteInfo(3.0, 3.5, 67.0, "あ"),
+        NoteInfo(6.0, 6.5, 69.0, "outside"),
+    ])
+
+    out_path = tmp_path / "reference.ustx"
+    inserted = add_reference_take_into_ustx(base_path, take_path, out_path, (2.0, 4.0), "V2M参考 tifa-01")
+    assert inserted == 2
+
+    result = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    assert [note["lyric"] for note in result["voice_parts"][0]["notes"]] == ["ど", "な", "て"]
+    assert len(result["tracks"]) == 2
+    reference_track = result["tracks"][1]
+    assert reference_track["track_name"] == "V2M参考 tifa-01"
+    assert reference_track["mute"] is True
+    assert reference_track["phonemizer"] == result["tracks"][0]["phonemizer"]
+    reference_part = result["voice_parts"][1]
+    assert reference_part["track_no"] == 1
+    assert [note["lyric"] for note in reference_part["notes"]] == ["な", "あ"]
 
 
 def test_splice_trims_notes_at_window_edges(tmp_path):

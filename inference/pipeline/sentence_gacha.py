@@ -653,5 +653,72 @@ def splice_take_into_ustx(
     return removed, inserted
 
 
+def add_reference_take_into_ustx(
+    base_ustx: Path,
+    take_ustx: Path,
+    out_ustx: Path,
+    window: tuple[float, float],
+    track_name: str,
+) -> int:
+    """Append the take's window notes as a muted reference track.
+
+    The new track reuses the first track's singer and phonemizer so the take
+    can be auditioned against the user's own notes; existing tracks, notes and
+    curves are untouched. Returns the inserted note count.
+    """
+    base = yaml.safe_load(base_ustx.read_text(encoding="utf-8"))
+    take = yaml.safe_load(take_ustx.read_text(encoding="utf-8"))
+    tracks = base.get("tracks") or []
+    parts = base.get("voice_parts") or []
+    if not tracks or not parts:
+        raise ValueError("base USTX has no track to use as the reference template")
+    base_res = int(base["resolution"])
+    base_bpm = float(base["bpm"])
+    take_res = int(take["resolution"])
+    take_bpm = float(take["bpm"])
+    start, end = window
+
+    reference_track = dict(tracks[0])
+    reference_track["track_name"] = track_name
+    reference_track["mute"] = True
+    reference_track["solo"] = False
+    base["tracks"].append(reference_track)
+
+    notes = []
+    for note in take["voice_parts"][0].get("notes") or []:
+        note_start, note_end = _ustx_note_span(note, take_res, take_bpm)
+        clipped_start = max(note_start, start)
+        clipped_end = min(note_end, end)
+        if clipped_end - clipped_start <= 0.001:
+            continue
+        clone = dict(note)
+        position = _seconds_to_ticks(clipped_start, base_res, base_bpm)
+        clone["position"] = position
+        clone["duration"] = max(10, _seconds_to_ticks(clipped_end, base_res, base_bpm) - position)
+        notes.append(clone)
+    notes.sort(key=lambda note: note["position"])
+
+    base_part = parts[0]
+    part_end = int(base_part.get("position") or 0) + int(base_part.get("duration") or 0)
+    note_end = max((note["position"] + note["duration"] for note in notes), default=0)
+    parts.append({
+        "duration": max(480, part_end, note_end),
+        "name": track_name,
+        "comment": "",
+        "track_no": len(base["tracks"]) - 1,
+        "position": 0,
+        "notes": notes,
+        "curves": [],
+        "masked_curves": [],
+    })
+
+    out_ustx.parent.mkdir(parents=True, exist_ok=True)
+    out_ustx.write_text(
+        yaml.safe_dump(base, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+    return len(notes)
+
+
 def load_manifest(path: Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
