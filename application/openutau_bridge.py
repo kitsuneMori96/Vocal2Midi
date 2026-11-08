@@ -174,8 +174,10 @@ def request_save(project_path, *, timeout: float = 10.0, poll_interval: float = 
                 payload = json.loads(response_path.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
                 payload = None
-            if isinstance(payload, dict) and payload.get("id") == request_id and payload.get("saved"):
-                return
+            if isinstance(payload, dict) and payload.get("id") == request_id:
+                if payload.get("saved"):
+                    return
+                raise OpenUtauSaveError("declined")
             time.sleep(poll_interval)
         raise OpenUtauSaveError("timeout")
     finally:

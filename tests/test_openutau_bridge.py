@@ -88,6 +88,32 @@ def test_request_save_timeout_aborts(tmp_path, monkeypatch):
     assert not (bridge / "save-request.json").exists()
 
 
+def test_request_save_declined_aborts_early(tmp_path, monkeypatch):
+    bridge = _make_bridge(tmp_path, monkeypatch)
+    request_path = bridge / "save-request.json"
+    response_path = bridge / "save-response.json"
+
+    def responder():
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if request_path.is_file():
+                payload = json.loads(request_path.read_text(encoding="utf-8"))
+                response_path.write_text(
+                    json.dumps({"id": payload["id"], "saved": False}), encoding="utf-8"
+                )
+                return
+            time.sleep(0.01)
+
+    thread = threading.Thread(target=responder)
+    thread.start()
+    try:
+        with pytest.raises(OpenUtauSaveError) as exc:
+            request_save(tmp_path / "song.ustx", timeout=2.0, poll_interval=0.01)
+        assert exc.value.reason == "declined"
+    finally:
+        thread.join()
+
+
 def test_request_save_ignores_stale_ack(tmp_path, monkeypatch):
     bridge = _make_bridge(tmp_path, monkeypatch)
     (bridge / "save-response.json").write_text(

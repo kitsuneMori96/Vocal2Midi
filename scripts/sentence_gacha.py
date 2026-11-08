@@ -175,6 +175,8 @@ def _run_apply(args) -> int:
             logger.error(
                 "The running OpenUtau has no v2m bridge; close it or use a bridged build, then retry."
             )
+        elif error.reason == "declined":
+            logger.error("OpenUtau failed to save; aborted to protect unsaved changes.")
         else:
             logger.error("OpenUtau did not save in time; aborted to protect unsaved changes.")
         return 1

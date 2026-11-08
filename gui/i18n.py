@@ -276,6 +276,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "OpenUtau 未在限时内完成保存，已取消应用，避免覆盖未保存的改动。",
         "en": "OpenUtau did not finish saving in time; apply cancelled to protect unsaved changes.",
     },
+    "repair_openutau_save_failed": {
+        "zh": "OpenUtau 保存失败，已取消应用。",
+        "en": "OpenUtau failed to save; apply cancelled.",
+    },
     "repair_no_results": {"zh": "还没有候选结果", "en": "No candidates yet"},
     "repair_select_take": {"zh": "请先在表格里选中一个候选", "en": "Select a candidate row first"},
     "repair_lyrics_read_failed": {"zh": "读取歌词失败: {err}", "en": "Failed to read lyrics: {err}"},

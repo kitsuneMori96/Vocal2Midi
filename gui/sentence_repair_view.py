@@ -873,7 +873,10 @@ class SentenceRepairInterface(ScrollArea):
         try:
             removed, inserted = splice_take_with_handshake(self._job_base, take_path, out_path, window)
         except OpenUtauSaveError as error:
-            key = "repair_openutau_no_bridge" if error.reason == "no-bridge" else "repair_openutau_save_timeout"
+            key = {
+                "no-bridge": "repair_openutau_no_bridge",
+                "declined": "repair_openutau_save_failed",
+            }.get(error.reason, "repair_openutau_save_timeout")
             self._show_warning(tr(key))
             return
         except Exception as error:  # noqa: BLE001
