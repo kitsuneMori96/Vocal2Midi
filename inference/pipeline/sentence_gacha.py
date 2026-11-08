@@ -607,9 +607,10 @@ def splice_take_into_ustx(
     """
     base = yaml.safe_load(base_ustx.read_text(encoding="utf-8"))
     take = yaml.safe_load(take_ustx.read_text(encoding="utf-8"))
-    base_res = int(base["resolution"])
+    # OpenUtau fixes resolution at 480 and leaves the key out of saved projects.
+    base_res = int(base.get("resolution") or 480)
     base_bpm = float(base["bpm"])
-    take_res = int(take["resolution"])
+    take_res = int(take.get("resolution") or 480)
     take_bpm = float(take["bpm"])
     start, end = window
 
@@ -672,9 +673,9 @@ def add_reference_take_into_ustx(
     parts = base.get("voice_parts") or []
     if not tracks or not parts:
         raise ValueError("base USTX has no track to use as the reference template")
-    base_res = int(base["resolution"])
+    base_res = int(base.get("resolution") or 480)
     base_bpm = float(base["bpm"])
-    take_res = int(take["resolution"])
+    take_res = int(take.get("resolution") or 480)
     take_bpm = float(take["bpm"])
     start, end = window
 

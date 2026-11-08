@@ -218,6 +218,24 @@ def test_reference_take_mutes_main_track_and_keeps_notes(tmp_path):
     assert [note["lyric"] for note in reference_part["notes"]] == ["な", "あ"]
 
 
+def test_splice_and_reference_accept_openutau_saved_ustx_without_resolution(tmp_path):
+    # OpenUtau fixes resolution at 480 and omits the key when it saves.
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    for path, notes in (
+        (base_path, [NoteInfo(2.2, 2.6, 62.0, "な")]),
+        (take_path, [NoteInfo(2.1, 2.4, 65.0, "な")]),
+    ):
+        data = _write_ustx(path, notes)
+        data.pop("resolution", None)
+        path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    out_path = tmp_path / "patched.ustx"
+    assert splice_take_into_ustx(base_path, take_path, out_path, (2.0, 4.0)) == (1, 1)
+    out_path = tmp_path / "reference.ustx"
+    assert add_reference_take_into_ustx(base_path, take_path, out_path, (2.0, 4.0), "V2M参考 x") == 1
+
+
 def test_splice_trims_notes_at_window_edges(tmp_path):
     base_path = tmp_path / "base.ustx"
     take_path = tmp_path / "take.ustx"
