@@ -13,9 +13,25 @@ import json
 import logging
 import os
 import sys
+import time
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+BRIDGE_DIR_NAME = "v2m-bridge"
+
+
+class OpenUtauSaveError(RuntimeError):
+    """OpenUtau could not flush unsaved edits before an in-place patch.
+
+    ``reason`` is ``no-bridge`` (running build lacks the v2m responder) or
+    ``timeout`` (responder did not acknowledge in time).
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _running_openutau_dirs() -> list[Path]:
@@ -115,3 +131,52 @@ def current_project_path() -> Path | None:
             if path.is_file():
                 return path
     return None
+
+
+def instance_dir_for_project(project_path) -> Path | None:
+    """Data dir of the running OpenUtau instance that has the project open."""
+    target = Path(project_path).resolve()
+    for directory in _running_openutau_dirs():
+        for recent in read_recent_projects(directory):
+            try:
+                if Path(recent).resolve() == target:
+                    return directory
+            except OSError:
+                continue
+    return None
+
+
+def request_save(project_path, *, timeout: float = 10.0, poll_interval: float = 0.2) -> None:
+    """Ask the running OpenUtau to save the project before we overwrite it.
+
+    Returns immediately when no running instance has the project open.
+    Raises OpenUtauSaveError when the instance cannot or does not save —
+    the caller must abort rather than clobber unsaved edits.
+    """
+    directory = instance_dir_for_project(project_path)
+    if directory is None:
+        return
+    bridge = directory / BRIDGE_DIR_NAME
+    if not (bridge / "ready.json").is_file():
+        raise OpenUtauSaveError("no-bridge")
+    request_id = uuid.uuid4().hex
+    request_path = bridge / "save-request.json"
+    response_path = bridge / "save-response.json"
+    response_path.unlink(missing_ok=True)
+    request_path.write_text(
+        json.dumps({"id": request_id, "project": str(Path(project_path).resolve())}),
+        encoding="utf-8",
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            try:
+                payload = json.loads(response_path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                payload = None
+            if isinstance(payload, dict) and payload.get("id") == request_id and payload.get("saved"):
+                return
+            time.sleep(poll_interval)
+        raise OpenUtauSaveError("timeout")
+    finally:
+        request_path.unlink(missing_ok=True)

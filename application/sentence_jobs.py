@@ -7,6 +7,8 @@ path whether it is triggered from the command line or from the desktop UI.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -41,6 +43,34 @@ def bar_beat_label(seconds: float, header: dict) -> str:
     ticks = seconds_to_ticks(seconds, header["tempos"], header["resolution"])
     bar, beat = ticks_to_bar_beat(ticks, header["project"].get("time_signatures"), header["resolution"])
     return f"{bar}.{int(beat)}"
+
+
+def splice_take_with_handshake(
+    base_path, take_path, out_path, window: tuple[float, float], *, save_timeout: float = 10.0
+) -> tuple[int, int]:
+    """Splice a take into a USTX, syncing with a running OpenUtau when in place.
+
+    Writing to the base file itself first asks OpenUtau to save and waits for
+    its ack (OpenUtauSaveError when it cannot), then patches atomically and
+    keeps a rolling backup at <stem>_backup.ustx. Any other output path leaves
+    the base untouched and needs no handshake.
+    """
+    from application.openutau_bridge import request_save
+    from inference.pipeline.sentence_gacha import splice_take_into_ustx
+
+    base_path = Path(base_path)
+    out_path = Path(out_path)
+    if out_path.resolve() != base_path.resolve():
+        return splice_take_into_ustx(base_path, take_path, out_path, window)
+    request_save(base_path, timeout=save_timeout)
+    tmp = base_path.with_name(base_path.stem + ".v2m-tmp.ustx")
+    try:
+        removed, inserted = splice_take_into_ustx(base_path, take_path, tmp, window)
+        shutil.copy2(base_path, base_path.with_name(base_path.stem + "_backup.ustx"))
+        os.replace(tmp, base_path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return removed, inserted
 
 
 def export_reference_curves(

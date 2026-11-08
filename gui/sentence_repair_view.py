@@ -856,7 +856,8 @@ class SentenceRepairInterface(ScrollArea):
         if not manifest or self._job_base is None or self._job_output_dir is None:
             self._show_warning(tr("repair_no_results"))
             return
-        from inference.pipeline.sentence_gacha import splice_take_into_ustx
+        from application.openutau_bridge import OpenUtauSaveError
+        from application.sentence_jobs import splice_take_with_handshake
 
         label = self._take_labels[row]
         entry = next((item for item in manifest["takes"] if item["take"] == label), None)
@@ -868,9 +869,13 @@ class SentenceRepairInterface(ScrollArea):
             float(manifest.get("splice_start", manifest["window_start"])),
             float(manifest.get("splice_end", manifest["window_end"])),
         )
-        out_path = self._job_base.with_name(f"{self._job_base.stem}_patched.ustx")
+        out_path = self._job_base
         try:
-            removed, inserted = splice_take_into_ustx(self._job_base, take_path, out_path, window)
+            removed, inserted = splice_take_with_handshake(self._job_base, take_path, out_path, window)
+        except OpenUtauSaveError as error:
+            key = "repair_openutau_no_bridge" if error.reason == "no-bridge" else "repair_openutau_save_timeout"
+            self._show_warning(tr(key))
+            return
         except Exception as error:  # noqa: BLE001
             self._show_error(tr("fail_title"), str(error))
             return

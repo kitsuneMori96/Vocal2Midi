@@ -268,6 +268,14 @@ _STRINGS: dict[str, dict[str, str]] = {
     "repair_need_engine": {"zh": "至少勾选一个对齐引擎", "en": "Select at least one aligner"},
     "repair_yue_hfa": {"zh": "粤语不支持 HubertFA，请只保留 TiFA", "en": "Cantonese does not support HubertFA; keep only TiFA"},
     "repair_busy": {"zh": "已有任务在运行，请先等待或停止", "en": "A job is already running; wait or stop it first"},
+    "repair_openutau_no_bridge": {
+        "zh": "运行中的 OpenUtau 不带 v2m 桥接，无法先保存再补丁。请关闭 OpenUtau 后再应用，或换用桥接构建。",
+        "en": "The running OpenUtau has no v2m bridge and cannot save before patching. Close OpenUtau and apply again, or use a bridged build.",
+    },
+    "repair_openutau_save_timeout": {
+        "zh": "OpenUtau 未在限时内完成保存，已取消应用，避免覆盖未保存的改动。",
+        "en": "OpenUtau did not finish saving in time; apply cancelled to protect unsaved changes.",
+    },
     "repair_no_results": {"zh": "还没有候选结果", "en": "No candidates yet"},
     "repair_select_take": {"zh": "请先在表格里选中一个候选", "en": "Select a candidate row first"},
     "repair_lyrics_read_failed": {"zh": "读取歌词失败: {err}", "en": "Failed to read lyrics: {err}"},

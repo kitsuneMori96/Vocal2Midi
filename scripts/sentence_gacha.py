@@ -124,12 +124,16 @@ def build_argparser(defaults: dict) -> argparse.ArgumentParser:
     apply_group.add_argument("--apply", type=Path, default=None,
                              help="Gacha output dir: splice a chosen take into --base")
     apply_group.add_argument("--take", default=None, help="Take label to splice (e.g. tifa-03)")
-    apply_group.add_argument("--base", type=Path, default=None, help="Full-song USTX to patch")
+    apply_group.add_argument("--base", type=Path, default=None,
+                             help="Full-song USTX to patch; set -o to the same path to patch in place "
+                                  "(a running OpenUtau saves first, then reloads the file)")
     return parser
 
 
 def _run_apply(args) -> int:
-    from inference.pipeline.sentence_gacha import load_manifest, splice_take_into_ustx
+    from application.openutau_bridge import OpenUtauSaveError
+    from application.sentence_jobs import splice_take_with_handshake
+    from inference.pipeline.sentence_gacha import load_manifest
 
     if not args.take:
         logger.error("--apply needs --take")
@@ -164,7 +168,16 @@ def _run_apply(args) -> int:
     out_path = args.output_dir
     if out_path.suffix.lower() != ".ustx":
         out_path = out_path / f"{args.base.stem}_patched.ustx"
-    removed, inserted = splice_take_into_ustx(args.base, take_path, out_path, window)
+    try:
+        removed, inserted = splice_take_with_handshake(args.base, take_path, out_path, window)
+    except OpenUtauSaveError as error:
+        if error.reason == "no-bridge":
+            logger.error(
+                "The running OpenUtau has no v2m bridge; close it or use a bridged build, then retry."
+            )
+        else:
+            logger.error("OpenUtau did not save in time; aborted to protect unsaved changes.")
+        return 1
     logger.info(
         f"Spliced {args.take} into {out_path} "
         f"({window[0]:.3f}-{window[1]:.3f}s, removed {removed}, inserted {inserted})."

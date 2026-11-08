@@ -99,7 +99,8 @@ def test_yue_unchecks_hfa(page):
     assert page.cb_hfa.isChecked() is False
 
 
-def test_apply_selected_splices_take(page, tmp_path):
+def test_apply_selected_splices_take(page, tmp_path, monkeypatch):
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
     base = tmp_path / "song.ustx"
     base.write_text(
         yaml.safe_dump(_ustx(120.0, [
@@ -133,12 +134,14 @@ def test_apply_selected_splices_take(page, tmp_path):
 
     page.apply_selected()
 
-    patched = yaml.safe_load((tmp_path / "song_patched.ustx").read_text(encoding="utf-8"))
+    patched = yaml.safe_load(base.read_text(encoding="utf-8"))
     notes = patched["voice_parts"][0]["notes"]
     lyrics = [note["lyric"] for note in notes]
     assert "old" not in lyrics
     assert lyrics == ["a", "new", "new2", "b"]
     assert notes == sorted(notes, key=lambda note: note["position"])
+    backup = yaml.safe_load((tmp_path / "song_backup.ustx").read_text(encoding="utf-8"))
+    assert "old" in [note["lyric"] for note in backup["voice_parts"][0]["notes"]]
 
 
 def test_apply_without_selection_warns(page, tmp_path):
