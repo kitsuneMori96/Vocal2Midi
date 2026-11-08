@@ -79,6 +79,38 @@ def seconds_to_ticks(seconds: float, tempos: list[dict[str, Any]], resolution: i
     return int(round(last["position"] + seconds * last["bpm"] * resolution / 60.0))
 
 
+def ticks_to_bar_beat(
+    ticks: float, time_signatures: list[dict[str, Any]] | None, resolution: int
+) -> tuple[int, float]:
+    """1-based bar number and 1-based beat within the bar, matching the OpenUtau ruler."""
+    sigs = sorted(
+        (
+            {
+                "bar": int(ts.get("bar_position", 0) or 0),
+                "num": int(ts.get("beat_per_bar", 4) or 4),
+                "den": int(ts.get("beat_unit", 4) or 4),
+            }
+            for ts in (time_signatures or [])
+        ),
+        key=lambda s: s["bar"],
+    )
+    if not sigs or sigs[0]["bar"] > 0:
+        sigs.insert(0, {"bar": 0, "num": 4, "den": 4})
+    tick = max(0, int(ticks))
+    acc = 0
+    for i, sig in enumerate(sigs):
+        ticks_per_beat = resolution * 4 / sig["den"]
+        ticks_per_bar = ticks_per_beat * sig["num"]
+        next_bar = sigs[i + 1]["bar"] if i + 1 < len(sigs) else None
+        span = (next_bar - sig["bar"]) * ticks_per_bar if next_bar is not None else None
+        if span is None or tick < acc + span:
+            within = tick - acc
+            return sig["bar"] + int(within // ticks_per_bar) + 1, (within % ticks_per_bar) / ticks_per_beat + 1
+        acc += span
+    last = sigs[-1]
+    return last["bar"] + 1, 1.0
+
+
 def _quantize(tick: float) -> int:
     return int(round(tick / UCurveInterval) * UCurveInterval)
 

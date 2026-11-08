@@ -32,6 +32,17 @@ def read_ustx_header(path) -> dict:
     }
 
 
+def bar_beat_label(seconds: float, header: dict) -> str:
+    """OpenUtau-ruler style position (bar.beat) for a song time, or '' without a header."""
+    from inference.pipeline.ustx_curves import seconds_to_ticks, ticks_to_bar_beat
+
+    if not header:
+        return ""
+    ticks = seconds_to_ticks(seconds, header["tempos"], header["resolution"])
+    bar, beat = ticks_to_bar_beat(ticks, header["project"].get("time_signatures"), header["resolution"])
+    return f"{bar}.{int(beat)}"
+
+
 def export_reference_curves(
     *,
     audio_path,

@@ -219,3 +219,36 @@ def test_cli_rejects_overwriting_base(tmp_path):
     audio.write_bytes(b"")
     base = _write_base(tmp_path)
     assert main([str(audio), "--base", str(base), "-o", str(base)]) == 2
+
+
+def test_ticks_to_bar_beat_matches_ruler():
+    from inference.pipeline.ustx_curves import ticks_to_bar_beat
+
+    sigs = [{"bar_position": 0, "beat_per_bar": 4, "beat_unit": 4}]
+    assert ticks_to_bar_beat(0, sigs, 480) == (1, 1.0)
+    assert ticks_to_bar_beat(1920, sigs, 480) == (2, 1.0)
+    assert ticks_to_bar_beat(2880, sigs, 480) == (2, 3.0)
+    assert ticks_to_bar_beat(1919, sigs, 480)[0] == 1
+
+
+def test_ticks_to_bar_beat_honours_signature_change():
+    from inference.pipeline.ustx_curves import ticks_to_bar_beat
+
+    sigs = [
+        {"bar_position": 0, "beat_per_bar": 4, "beat_unit": 4},
+        {"bar_position": 4, "beat_per_bar": 3, "beat_unit": 4},
+    ]
+    assert ticks_to_bar_beat(4 * 1920 + 960, sigs, 480) == (5, 3.0)
+
+
+def test_bar_beat_label_uses_tempo_map():
+    from application.sentence_jobs import bar_beat_label
+
+    header = {
+        "project": {"time_signatures": [{"bar_position": 0, "beat_per_bar": 4, "beat_unit": 4}]},
+        "tempos": [{"position": 0, "bpm": 120}],
+        "resolution": 480,
+    }
+    assert bar_beat_label(2.0, header) == "2.1"
+    assert bar_beat_label(3.0, header) == "2.3"
+    assert bar_beat_label(1.0, None) == ""

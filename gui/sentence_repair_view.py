@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from application.sentence_jobs import export_reference_curves, read_ustx_header
+from application.sentence_jobs import bar_beat_label, export_reference_curves, read_ustx_header
 from gui.fluent_compat import (
     BodyLabel,
     CardWidget,
@@ -78,6 +78,7 @@ class SentenceRepairInterface(ScrollArea):
         self._last_manifest = None
         self._take_labels: list[str] = []
         self._lyric_lines: list = []
+        self._base_header: dict | None = None
         self._audio_touched = False
         self._output_touched = False
 
@@ -191,7 +192,7 @@ class SentenceRepairInterface(ScrollArea):
 
         row = QHBoxLayout()
         self.line_combo = ComboBox(self)
-        self.line_combo.setMinimumWidth(420)
+        self.line_combo.setMinimumWidth(520)
         self.line_combo.currentIndexChanged.connect(self._update_window_label)
         row.addWidget(self.line_combo, 1)
         layout.addLayout(row)
@@ -446,14 +447,15 @@ class SentenceRepairInterface(ScrollArea):
 
     def _on_base_changed(self, _text: str):
         path = self.base_edit.text().strip()
-        if not path or not pathlib.Path(path).is_file():
-            return
-        try:
-            header = read_ustx_header(path)
-        except Exception as error:  # noqa: BLE001 - surfaced in the log
-            self.log_msg(tr("repair_base_read_failed", err=error))
-            return
-        self.tempo_spin.setValue(float(header["bpm"]))
+        self._base_header = None
+        if path and pathlib.Path(path).is_file():
+            try:
+                self._base_header = read_ustx_header(path)
+            except Exception as error:  # noqa: BLE001 - surfaced in the log
+                self.log_msg(tr("repair_base_read_failed", err=error))
+        if self._base_header:
+            self.tempo_spin.setValue(float(self._base_header["bpm"]))
+        self._refresh_lyric_combo(keep_value=True)
         self._update_window_label()
 
     def _on_manual_window_changed(self, _text: str):
@@ -492,10 +494,13 @@ class SentenceRepairInterface(ScrollArea):
         for line in self._lyric_lines:
             if line.start is None:
                 stamp = "  --        --      "
+                bar = "   -.-"
             else:
                 end = line.end if line.end is not None else line.start
                 stamp = f"{line.start:8.3f}-{end:8.3f}"
-            self.line_combo.addItem(f"{line.index + 1:3d}  {stamp}  {line.text}", userData=line.index)
+                label = bar_beat_label(line.start, self._base_header)
+                bar = f"{label:>6}" if label else "   -.-"
+            self.line_combo.addItem(f"{line.index + 1:3d}  {bar}  {stamp}  {line.text}", userData=line.index)
         if current is not None:
             index = self.line_combo.findData(current)
             if index >= 0:
