@@ -205,6 +205,11 @@ _STRINGS: dict[str, dict[str, str]] = {
     "repair_audio": {"zh": "音频:", "en": "Audio:"},
     "repair_lyrics_file": {"zh": "歌词文件 (LRC/TXT):", "en": "Lyrics File (LRC/TXT):"},
     "repair_base": {"zh": "底稿 USTX:", "en": "Base USTX:"},
+    "repair_base_from_openutau": {"zh": "读取 OpenUtau 当前工程", "en": "Read OpenUtau Project"},
+    "repair_base_not_found": {
+        "zh": "没找到 OpenUtau 正在用的工程。请先在 OpenUtau 里打开它，或手动选择底稿 USTX。",
+        "en": "No open OpenUtau project found. Open it in OpenUtau first, or pick the base USTX manually.",
+    },
     "repair_output_dir": {"zh": "输出目录:", "en": "Output Folder:"},
     "repair_parse_lyrics": {"zh": "解析歌词", "en": "Parse Lyrics"},
     "repair_no_lyrics": {"zh": "尚未解析歌词", "en": "Lyrics not parsed"},

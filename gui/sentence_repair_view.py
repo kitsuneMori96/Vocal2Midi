@@ -102,6 +102,8 @@ class SentenceRepairInterface(ScrollArea):
         self.setWidgetResizable(True)
         self.enableTransparentBackground()
 
+        if not self.base_edit.text().strip():
+            self._read_base_from_openutau(silent=True)
         self._refresh_language_options()
         self._refresh_lyric_combo()
         self._update_window_label()
@@ -165,6 +167,10 @@ class SentenceRepairInterface(ScrollArea):
         row = QHBoxLayout()
         self.base_edit = self._path_row(row, "repair_base", self._browse_base)
         self.base_edit.textChanged.connect(self._on_base_changed)
+        self.btn_base_openutau = PushButton(tr("repair_base_from_openutau"), self, FluentIcon.SYNC)
+        self._bind_tr(lambda: self.btn_base_openutau.setText(tr("repair_base_from_openutau")))
+        self.btn_base_openutau.clicked.connect(lambda: self._read_base_from_openutau())
+        row.addWidget(self.btn_base_openutau)
         layout.addLayout(row)
 
         row = QHBoxLayout()
@@ -429,6 +435,16 @@ class SentenceRepairInterface(ScrollArea):
         )
         if path:
             self.base_edit.setText(path)
+
+    def _read_base_from_openutau(self, silent: bool = False):
+        from application.openutau_bridge import current_project_path
+
+        path = current_project_path()
+        if path is None:
+            if not silent:
+                self._show_warning(tr("repair_base_not_found"))
+            return
+        self.base_edit.setText(str(path))
 
     def _browse_output(self):
         path = QFileDialog.getExistingDirectory(self, tr("choose_folder_dialog"), self.output_edit.text())
