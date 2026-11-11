@@ -69,6 +69,40 @@ def test_reference_track_in_place_keeps_backup(tmp_path, monkeypatch):
     assert len(backup["tracks"]) == 1
 
 
+def test_backup_history_and_restore(tmp_path, monkeypatch):
+    from application.sentence_jobs import list_backups, restore_backup_with_handshake
+
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    base = _write_ustx(tmp_path / "song.ustx", [NoteInfo(2.2, 2.6, 62.0, "v1")])
+    take = _write_ustx(tmp_path / "take.ustx", [NoteInfo(2.1, 2.4, 65.0, "v2")])
+
+    splice_take_with_handshake(base, take, base, (2.0, 4.0))
+    history = list_backups(base)
+    assert len(history) == 1
+    assert "v1" in history[0].read_text(encoding="utf-8")
+
+    restore_backup_with_handshake(base, history[0])
+    restored = yaml.safe_load(base.read_text(encoding="utf-8"))
+    assert [n["lyric"] for n in restored["voice_parts"][0]["notes"]] == ["v1"]
+    # The pre-restore state (v2) is itself backed up, so restore is reversible.
+    assert any("v2" in p.read_text(encoding="utf-8") for p in list_backups(base))
+
+
+def test_restore_mix_with_handshake(tmp_path, monkeypatch):
+    from application.sentence_jobs import restore_mix_with_handshake
+    from inference.pipeline.sentence_gacha import snapshot_mix
+
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    base = _write_ustx(tmp_path / "song.ustx", [NoteInfo(2.2, 2.6, 62.0, "な")])
+    take = _write_ustx(tmp_path / "take.ustx", [NoteInfo(2.1, 2.4, 65.0, "な")])
+    snap = snapshot_mix(base)
+    add_reference_take_with_handshake(base, take, base, (2.0, 4.0), "V2M参考 a")
+    restore_mix_with_handshake(base, snap)
+    patched = yaml.safe_load(base.read_text(encoding="utf-8"))
+    assert patched["tracks"][0]["mute"] is False
+    assert patched["tracks"][1]["mute"] is True
+
+
 def test_separate_output_skips_handshake(tmp_path, monkeypatch):
     import application.openutau_bridge as bridge
 

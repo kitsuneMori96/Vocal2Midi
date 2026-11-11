@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -45,13 +46,42 @@ def bar_beat_label(seconds: float, header: dict) -> str:
     return f"{bar}.{int(beat)}"
 
 
+BACKUP_HISTORY_LIMIT = 10
+
+
+def _backup_dir(base_path: Path) -> Path:
+    return base_path.with_name(base_path.stem + "_backups")
+
+
+def _record_backup(base_path: Path) -> None:
+    """Rolling <stem>_backup.ustx plus a timestamped history (newest 10 kept)."""
+    shutil.copy2(base_path, base_path.with_name(base_path.stem + "_backup.ustx"))
+    history = _backup_dir(base_path)
+    history.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    shutil.copy2(base_path, history / f"{base_path.stem}-{stamp}.ustx")
+    saved = sorted(history.glob(f"{base_path.stem}-*.ustx"))
+    for old in saved[:-BACKUP_HISTORY_LIMIT]:
+        old.unlink(missing_ok=True)
+
+
+def list_backups(base_path) -> list[Path]:
+    """Timestamped history newest first, falling back to the rolling backup."""
+    base_path = Path(base_path)
+    history = sorted(_backup_dir(base_path).glob(f"{base_path.stem}-*.ustx"), reverse=True)
+    if history:
+        return history
+    rolling = base_path.with_name(base_path.stem + "_backup.ustx")
+    return [rolling] if rolling.is_file() else []
+
+
 def _patch_ustx(base_path, out_path, transform, *, save_timeout: float = 10.0):
     """Run a USTX transform, syncing with a running OpenUtau when in place.
 
     Writing to the base file itself first asks OpenUtau to save and waits for
     its ack (OpenUtauSaveError when it cannot), then writes atomically and
-    keeps a rolling backup at <stem>_backup.ustx. Any other output path leaves
-    the base untouched and needs no handshake.
+    records a rolling backup plus a timestamped history. Any other output path
+    leaves the base untouched and needs no handshake.
     """
     from application.openutau_bridge import request_save
 
@@ -63,11 +93,37 @@ def _patch_ustx(base_path, out_path, transform, *, save_timeout: float = 10.0):
     tmp = base_path.with_name(base_path.stem + ".v2m-tmp.ustx")
     try:
         result = transform(base_path, tmp)
-        shutil.copy2(base_path, base_path.with_name(base_path.stem + "_backup.ustx"))
+        _record_backup(base_path)
         os.replace(tmp, base_path)
     finally:
         tmp.unlink(missing_ok=True)
     return result
+
+
+def restore_backup_with_handshake(base_path, backup_path, *, save_timeout: float = 10.0) -> None:
+    """Restore a previous backup over the base, syncing when written in place.
+
+    The current state is itself backed up first, so a restore is reversible.
+    """
+    backup_path = Path(backup_path)
+    if not backup_path.is_file():
+        raise FileNotFoundError(f"backup not found: {backup_path}")
+
+    def transform(base, out):
+        shutil.copyfile(backup_path, out)
+
+    _patch_ustx(base_path, base_path, transform, save_timeout=save_timeout)
+
+
+def restore_mix_with_handshake(base_path, snapshot, *, save_timeout: float = 10.0) -> None:
+    """Restore a mute/solo snapshot over the base, syncing when in place."""
+    from inference.pipeline.sentence_gacha import restore_mix_into_ustx
+
+    _patch_ustx(
+        base_path, base_path,
+        lambda base, out: restore_mix_into_ustx(base, out, snapshot),
+        save_timeout=save_timeout,
+    )
 
 
 def splice_take_with_handshake(

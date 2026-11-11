@@ -5,7 +5,7 @@ import yaml
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 
 @pytest.fixture(scope="module")
@@ -113,6 +113,7 @@ def test_yue_unchecks_hfa(page):
 
 def test_apply_selected_splices_take(page, tmp_path, monkeypatch):
     monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    monkeypatch.setattr("gui.sentence_repair_view.QMessageBox.question", lambda *a, **k: QMessageBox.Yes)
     base = tmp_path / "song.ustx"
     base.write_text(
         yaml.safe_dump(_ustx(120.0, [
@@ -199,6 +200,90 @@ def test_add_reference_selected_mutes_main_track(page, tmp_path, monkeypatch):
     assert patched["tracks"][1]["mute"] is False
 
 
+def _select_take(page, tmp_path, base_notes, take_notes):
+    base = tmp_path / "song.ustx"
+    base.write_text(yaml.safe_dump(_ustx(120.0, base_notes)), encoding="utf-8")
+    take = tmp_path / "tifa-01.ustx"
+    take.write_text(yaml.safe_dump(_ustx(120.0, take_notes)), encoding="utf-8")
+    page.base_edit.setText(str(base))
+    page._job_base = base
+    page._job_output_dir = tmp_path
+    page._last_manifest = {
+        "window_start": 9.5, "window_end": 15.3,
+        "splice_start": 10.0, "splice_end": 15.0,
+        "takes": [{"take": "tifa-01", "ustx": take.name}],
+    }
+    page._take_labels = ["tifa-01"]
+    page.results_table.setRowCount(0)
+    page.results_table.insertRow(0)
+    page.results_table.selectRow(0)
+    return base
+
+
+def test_apply_cancelled_keeps_base(page, tmp_path, monkeypatch):
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    monkeypatch.setattr("gui.sentence_repair_view.QMessageBox.question", lambda *a, **k: QMessageBox.No)
+    base = _select_take(
+        page, tmp_path,
+        [{"position": 12000, "duration": 480, "lyric": "old"}],
+        [{"position": 10500, "duration": 240, "lyric": "new"}],
+    )
+    before = base.read_text(encoding="utf-8")
+    page.apply_selected()
+    assert base.read_text(encoding="utf-8") == before
+
+
+def test_restore_mix_after_reference(page, tmp_path, monkeypatch):
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    base = _select_take(
+        page, tmp_path,
+        [{"position": 12000, "duration": 480, "lyric": "old"}],
+        [{"position": 10500, "duration": 240, "lyric": "new"}],
+    )
+    page.add_reference_selected()
+    assert page.btn_restore_mix.isEnabled()
+    page.restore_mix_selected()
+    patched = yaml.safe_load(base.read_text(encoding="utf-8"))
+    assert patched["tracks"][0]["mute"] is False
+    assert patched["tracks"][1]["mute"] is True
+    assert not page.btn_restore_mix.isEnabled()
+
+
+def test_restore_backup_after_apply(page, tmp_path, monkeypatch):
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    monkeypatch.setattr("gui.sentence_repair_view.QMessageBox.question", lambda *a, **k: QMessageBox.Yes)
+    base = _select_take(
+        page, tmp_path,
+        [{"position": 12000, "duration": 480, "lyric": "old"}],
+        [{"position": 10500, "duration": 240, "lyric": "new"}],
+    )
+    page.apply_selected()
+    assert "new" in base.read_text(encoding="utf-8")
+    page.restore_backup_selected()
+    assert "old" in base.read_text(encoding="utf-8")
+    assert "new" not in base.read_text(encoding="utf-8")
+
+
+def test_project_context_remembered_per_base(page, tmp_path):
+    base1 = tmp_path / "a.ustx"
+    base1.write_text(yaml.safe_dump(_ustx(120.0, [])), encoding="utf-8")
+    base2 = tmp_path / "b.ustx"
+    base2.write_text(yaml.safe_dump(_ustx(120.0, [])), encoding="utf-8")
+    audio1 = tmp_path / "song1.wav"
+    audio1.write_text("x", encoding="utf-8")
+    audio2 = tmp_path / "song2.wav"
+    audio2.write_text("x", encoding="utf-8")
+
+    page.base_edit.setText(str(base1))
+    page.audio_edit.setText(str(audio1))
+    page.base_edit.setText(str(base2))
+    page.audio_edit.setText(str(audio2))
+    page.base_edit.setText(str(base1))
+    assert page.audio_edit.text() == str(audio1)
+    page.base_edit.setText(str(base2))
+    assert page.audio_edit.text() == str(audio2)
+
+
 def test_apply_without_selection_warns(page, tmp_path):
     page._last_manifest = None
     page._job_base = tmp_path / "base.ustx"
@@ -237,7 +322,8 @@ def test_populate_results_fills_table(page, tmp_path):
 
     assert page.results_table.rowCount() == 1
     assert page.results_table.item(0, 0).text() == "tifa-01"
-    assert page.results_table.item(0, 7).text() == "a a"
+    assert page.results_table.item(0, 1).text() == "a a"
+    assert page.results_table.item(0, 2).text()  # issues hint column
     assert page._take_labels == ["tifa-01"]
     assert page.results_table.currentRow() == 0
 

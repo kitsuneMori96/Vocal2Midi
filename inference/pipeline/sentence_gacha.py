@@ -584,14 +584,93 @@ def _write_reports(
     )
 
 
+REFERENCE_TRACK_PREFIX = "V2M参考"
+
+
+def _part_offset(part: dict) -> int:
+    return int(part.get("position") or 0)
+
+
 def _ustx_note_span(note: dict, resolution: int, bpm: float) -> tuple[float, float]:
     start = note["position"] / resolution * 60.0 / bpm
     duration = note["duration"] / resolution * 60.0 / bpm
     return start, start + duration
 
 
+def _part_note_span(part: dict, note: dict, resolution: int, bpm: float) -> tuple[float, float]:
+    offset = _part_offset(part) / resolution * 60.0 / bpm
+    start, end = _ustx_note_span(note, resolution, bpm)
+    return start + offset, end + offset
+
+
 def _seconds_to_ticks(seconds: float, resolution: int, bpm: float) -> int:
     return int(round(seconds * bpm / 60.0 * resolution))
+
+
+def select_target_part(base: dict, window: tuple[float, float]) -> tuple[int, dict]:
+    """The voice part whose notes overlap the window most (first part on ties)."""
+    parts = base.get("voice_parts") or []
+    if not parts:
+        raise ValueError("base USTX has no voice part to edit")
+    res = int(base.get("resolution") or 480)
+    bpm = float(base["bpm"])
+    start, end = window
+
+    def overlap(part: dict) -> float:
+        total = 0.0
+        for note in part.get("notes") or []:
+            ns, ne = _part_note_span(part, note, res, bpm)
+            total += max(0.0, min(ne, end) - max(ns, start))
+        if total == 0.0:
+            ps = _part_offset(part) / res * 60.0 / bpm
+            pe = ps + int(part.get("duration") or 0) / res * 60.0 / bpm
+            total = max(0.0, min(pe, end) - max(ps, start))
+        return total
+
+    index = max(range(len(parts)), key=lambda i: overlap(parts[i]))
+    return index, parts[index]
+
+
+def _splice_part_notes(base_part, take_part, window, base_res, base_bpm, take_res, take_bpm):
+    start, end = window
+    offset = _part_offset(base_part)
+    kept = []
+    removed = 0
+    for note in base_part.get("notes") or []:
+        ns, ne = _part_note_span(base_part, note, base_res, base_bpm)
+        if ne <= start or ns >= end:
+            kept.append(note)
+        else:
+            removed += 1
+    inserted = 0
+    for note in take_part.get("notes") or []:
+        ns, ne = _part_note_span(take_part, note, take_res, take_bpm)
+        if ne <= start or ns >= end:
+            continue
+        clipped_start = max(ns, start)
+        clipped_end = min(ne, end)
+        if clipped_end - clipped_start <= 0.001:
+            continue
+        clone = dict(note)
+        position = _seconds_to_ticks(clipped_start, base_res, base_bpm) - offset
+        clone["position"] = position
+        clone["duration"] = max(10, _seconds_to_ticks(clipped_end, base_res, base_bpm) - offset - position)
+        kept.append(clone)
+        inserted += 1
+    kept.sort(key=lambda note: note["position"])
+    return kept, removed, inserted
+
+
+def _load_ustx(path: Path) -> dict:
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+
+
+def _write_ustx(path: Path, base: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(base, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
 
 
 def splice_take_into_ustx(
@@ -600,58 +679,53 @@ def splice_take_into_ustx(
     out_ustx: Path,
     window: tuple[float, float],
 ) -> tuple[int, int]:
-    """Replace base notes inside the window with the take's notes.
+    """Replace the target part's notes inside the window with the take's notes.
 
-    Returns (removed, inserted). Notes straddling a window edge are replaced;
-    the base file's curves and expressions are left untouched.
+    The target part is the one overlapping the window most. Returns
+    (removed, inserted); curves and expressions are left untouched.
     """
-    base = yaml.safe_load(base_ustx.read_text(encoding="utf-8"))
-    take = yaml.safe_load(take_ustx.read_text(encoding="utf-8"))
+    base = _load_ustx(base_ustx)
+    take = _load_ustx(take_ustx)
     # OpenUtau fixes resolution at 480 and leaves the key out of saved projects.
     base_res = int(base.get("resolution") or 480)
     base_bpm = float(base["bpm"])
     take_res = int(take.get("resolution") or 480)
     take_bpm = float(take["bpm"])
-    start, end = window
 
-    base_part = base["voice_parts"][0]
-    take_part = take["voice_parts"][0]
-    kept = []
-    removed = 0
-    for note in base_part["notes"]:
-        note_start, note_end = _ustx_note_span(note, base_res, base_bpm)
-        if note_end <= start or note_start >= end:
-            kept.append(note)
-        else:
-            removed += 1
-
-    inserted = 0
-    for note in take_part["notes"]:
-        note_start, note_end = _ustx_note_span(note, take_res, take_bpm)
-        if note_end <= start or note_start >= end:
-            continue
-        clipped_start = max(note_start, start)
-        clipped_end = min(note_end, end)
-        if clipped_end - clipped_start <= 0.001:
-            continue
-        clone = dict(note)
-        position = _seconds_to_ticks(clipped_start, base_res, base_bpm)
-        clone["position"] = position
-        clone["duration"] = max(10, _seconds_to_ticks(clipped_end, base_res, base_bpm) - position)
-        kept.append(clone)
-        inserted += 1
-
-    kept.sort(key=lambda note: note["position"])
+    _index, base_part = select_target_part(base, window)
+    kept, removed, inserted = _splice_part_notes(
+        base_part, take["voice_parts"][0], window, base_res, base_bpm, take_res, take_bpm
+    )
     base_part["notes"] = kept
     base_part["duration"] = max(
         480, max((note["position"] + note["duration"] for note in kept), default=0)
     )
-    out_ustx.parent.mkdir(parents=True, exist_ok=True)
-    out_ustx.write_text(
-        yaml.safe_dump(base, allow_unicode=True, sort_keys=False, default_flow_style=False),
-        encoding="utf-8",
-    )
+    _write_ustx(out_ustx, base)
     return removed, inserted
+
+
+def preview_splice(base_ustx: Path, take_ustx: Path, window: tuple[float, float]) -> dict:
+    """Dry-run splice: target track/part and note counts, without writing."""
+    base = _load_ustx(base_ustx)
+    take = _load_ustx(take_ustx)
+    base_res = int(base.get("resolution") or 480)
+    base_bpm = float(base["bpm"])
+    take_res = int(take.get("resolution") or 480)
+    take_bpm = float(take["bpm"])
+    _index, part = select_target_part(base, window)
+    tracks = base.get("tracks") or []
+    track_no = int(part.get("track_no") or 0)
+    track_name = tracks[track_no].get("track_name", "") if track_no < len(tracks) else ""
+    _kept, removed, inserted = _splice_part_notes(
+        part, take["voice_parts"][0], window, base_res, base_bpm, take_res, take_bpm
+    )
+    return {
+        "track_no": track_no,
+        "track_name": track_name or "",
+        "part_name": part.get("name") or "",
+        "removed": removed,
+        "inserted": inserted,
+    }
 
 
 def add_reference_take_into_ustx(
@@ -661,14 +735,17 @@ def add_reference_take_into_ustx(
     window: tuple[float, float],
     track_name: str,
 ) -> int:
-    """Append the take's window notes as an audible reference track.
+    """Audition the take on a single reusable reference track.
 
-    The new track reuses the first track's singer and phonemizer and the main
-    track is muted so the take is heard immediately; existing notes and curves
+    The reference track clones the target part's singer/phonemizer. Adding
+    another take replaces that track's part instead of accumulating tracks.
+    For the audition every vocal track except the reference is muted (and
+    un-soloed) while wave-only accompaniment tracks keep their mute state, so
+    the take is heard immediately over the backing. Existing notes and curves
     are untouched. Returns the inserted note count.
     """
-    base = yaml.safe_load(base_ustx.read_text(encoding="utf-8"))
-    take = yaml.safe_load(take_ustx.read_text(encoding="utf-8"))
+    base = _load_ustx(base_ustx)
+    take = _load_ustx(take_ustx)
     tracks = base.get("tracks") or []
     parts = base.get("voice_parts") or []
     if not tracks or not parts:
@@ -679,13 +756,34 @@ def add_reference_take_into_ustx(
     take_bpm = float(take["bpm"])
     start, end = window
 
-    reference_track = dict(tracks[0])
+    _index, target_part = select_target_part(base, window)
+    template_no = int(target_part.get("track_no") or 0)
+    template = tracks[template_no] if template_no < len(tracks) else tracks[0]
+
+    ref_index = next(
+        (i for i, t in enumerate(tracks)
+         if str(t.get("track_name", "")).startswith(REFERENCE_TRACK_PREFIX)),
+        None,
+    )
+    reference_track = dict(template)
     reference_track["track_name"] = track_name
     reference_track["mute"] = False
     reference_track["solo"] = False
-    # The user adds a reference to listen to it, so the main track yields.
-    tracks[0]["mute"] = True
-    base["tracks"].append(reference_track)
+    if ref_index is None:
+        tracks.append(reference_track)
+        ref_index = len(tracks) - 1
+    else:
+        tracks[ref_index] = reference_track
+        parts = [p for p in parts if int(p.get("track_no") or 0) != ref_index]
+        base["voice_parts"] = parts
+
+    vocal_tracks = {int(p.get("track_no") or 0) for p in parts}
+    for i, track in enumerate(tracks):
+        if i == ref_index:
+            continue
+        track["solo"] = False
+        if i in vocal_tracks:
+            track["mute"] = True
 
     notes = []
     for note in take["voice_parts"][0].get("notes") or []:
@@ -701,26 +799,43 @@ def add_reference_take_into_ustx(
         notes.append(clone)
     notes.sort(key=lambda note: note["position"])
 
-    base_part = parts[0]
-    part_end = int(base_part.get("position") or 0) + int(base_part.get("duration") or 0)
     note_end = max((note["position"] + note["duration"] for note in notes), default=0)
     parts.append({
-        "duration": max(480, part_end, note_end),
+        "duration": max(480, note_end),
         "name": track_name,
         "comment": "",
-        "track_no": len(base["tracks"]) - 1,
+        "track_no": ref_index,
         "position": 0,
         "notes": notes,
         "curves": [],
         "masked_curves": [],
     })
 
-    out_ustx.parent.mkdir(parents=True, exist_ok=True)
-    out_ustx.write_text(
-        yaml.safe_dump(base, allow_unicode=True, sort_keys=False, default_flow_style=False),
-        encoding="utf-8",
-    )
+    _write_ustx(out_ustx, base)
     return len(notes)
+
+
+def snapshot_mix(ustx_path: Path) -> list[dict]:
+    """Per-track mute/solo state, to restore after an audition."""
+    base = _load_ustx(ustx_path)
+    return [
+        {"mute": bool(t.get("mute")), "solo": bool(t.get("solo"))}
+        for t in base.get("tracks") or []
+    ]
+
+
+def restore_mix_into_ustx(base_ustx: Path, out_ustx: Path, snapshot: list[dict]) -> None:
+    """Restore a saved mute/solo snapshot; tracks added since are muted."""
+    base = _load_ustx(base_ustx)
+    tracks = base.get("tracks") or []
+    for i, track in enumerate(tracks):
+        if i < len(snapshot):
+            track["mute"] = bool(snapshot[i]["mute"])
+            track["solo"] = bool(snapshot[i]["solo"])
+        else:
+            track["mute"] = True
+            track["solo"] = False
+    _write_ustx(out_ustx, base)
 
 
 def load_manifest(path: Path) -> dict:

@@ -273,13 +273,17 @@ For passages the decoder gets wrong, the pipeline can be rerun on a single lyric
 
 - `inference/pipeline/sentence_gacha.py` — parse timestamped lyric lines, resolve the audio
   window, build a grid of decoding parameters (`TakeParams`), run the takes, diagnose each
-  result, write reports/manifests, `splice_take_into_ustx()` to replace a window in a full-song
-  export, and `add_reference_take_into_ustx()` to append an audible reference track that clones
-  the first track's singer/phonemizer while muting the main track (for cherry-picking after
-  manual edits).
+  result, write reports/manifests. `select_target_part()` picks the voice part overlapping the
+  window (note times include the part offset); `splice_take_into_ustx()` replaces that part's
+  window notes and `preview_splice()` dry-runs the counts/target for the confirm dialog.
+  `add_reference_take_into_ustx()` auditions the take on one reusable `V2M参考` track cloning the
+  target track's singer/phonemizer, muting vocal tracks while keeping wave-only accompaniment;
+  `snapshot_mix()` / `restore_mix_into_ustx()` save and restore per-track mute/solo.
 - `application/sentence_jobs.py` — GUI/CLI-shared jobs: `export_reference_curves()`,
-  `splice_take_with_handshake()` and `add_reference_take_with_handshake()` (in-place write with
-  a rolling `<stem>_backup.ustx`), `bar_beat_label()` for OpenUtau-style positions.
+  `splice_take_with_handshake()`, `add_reference_take_with_handshake()`,
+  `restore_mix_with_handshake()` and `restore_backup_with_handshake()` (in-place write with a
+  rolling `<stem>_backup.ustx` plus a timestamped `<stem>_backups/` history, newest 10 kept;
+  `list_backups()`), `bar_beat_label()` for OpenUtau-style positions.
 - `application/openutau_bridge.py` — find the running OpenUtau instance (process snapshot →
   data dir → `prefs.json` recents), default the base USTX to its open project, and run the
   save handshake in `<DataPath>/v2m-bridge/` (`save-request.json` → `save-response.json`).

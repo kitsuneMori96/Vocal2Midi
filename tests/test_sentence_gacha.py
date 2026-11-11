@@ -13,8 +13,12 @@ from inference.pipeline.sentence_gacha import (
     clip_lyrics_for_window,
     load_manifest,
     parse_lyric_lines,
+    preview_splice,
     resolve_window,
+    restore_mix_into_ustx,
     select_line,
+    select_target_part,
+    snapshot_mix,
     splice_take_into_ustx,
 )
 
@@ -216,6 +220,80 @@ def test_reference_take_mutes_main_track_and_keeps_notes(tmp_path):
     reference_part = result["voice_parts"][1]
     assert reference_part["track_no"] == 1
     assert [note["lyric"] for note in reference_part["notes"]] == ["な", "あ"]
+
+
+def test_reference_reuses_track_and_keeps_accompaniment(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    base = _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "な")])
+    # A wave-only accompaniment track (no voice part) must stay audible.
+    base["tracks"].append({**base["tracks"][0], "track_name": "伴奏", "mute": False})
+    base["wave_parts"] = [{"track_no": 1, "position": 0, "duration": 4800}]
+    base_path.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    _write_ustx(take_path, [NoteInfo(2.1, 2.4, 65.0, "な")])
+
+    add_reference_take_into_ustx(base_path, take_path, base_path, (2.0, 4.0), "V2M参考 a")
+    add_reference_take_into_ustx(base_path, take_path, base_path, (2.0, 4.0), "V2M参考 b")
+
+    result = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    assert len(result["tracks"]) == 3  # main + accompaniment + one reused reference
+    assert result["tracks"][0]["mute"] is True
+    assert result["tracks"][1]["mute"] is False  # accompaniment untouched
+    assert result["tracks"][2]["track_name"] == "V2M参考 b"
+    assert result["tracks"][2]["mute"] is False
+    ref_parts = [p for p in result["voice_parts"] if p["track_no"] == 2]
+    assert len(ref_parts) == 1  # replaced, not accumulated
+
+
+def test_splice_targets_part_by_window_and_respects_offset(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    base = _write_ustx(base_path, [NoteInfo(0.5, 0.9, 60.0, "intro")])
+    # Second part starts at 10s (tick 9600 at 120bpm/480) and holds the target line.
+    base["voice_parts"].append({
+        "position": 9600, "duration": 4800, "name": "line2",
+        "notes": [{"position": 480, "duration": 480, "lyric": "old"}],
+        "curves": [], "masked_curves": [],
+    })
+    base_path.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    _write_ustx(take_path, [NoteInfo(10.6, 10.9, 65.0, "new")])
+
+    index, part = select_target_part(base, (10.0, 12.0))
+    assert index == 1 and part["name"] == "line2"
+    removed, inserted = splice_take_into_ustx(base_path, take_path, base_path, (10.0, 12.0))
+    assert (removed, inserted) == (1, 1)
+    result = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    assert [n["lyric"] for n in result["voice_parts"][0]["notes"]] == ["intro"]
+    new_note = result["voice_parts"][1]["notes"][0]
+    assert new_note["lyric"] == "new"
+    # Stored part-relative: 10.6s -> tick 10176 absolute, minus offset 9600 = 576.
+    assert new_note["position"] == 576
+
+
+def test_preview_splice_reports_target_and_counts(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "old")])
+    _write_ustx(take_path, [NoteInfo(2.1, 2.4, 65.0, "n1"), NoteInfo(2.5, 2.9, 66.0, "n2")])
+    info = preview_splice(base_path, take_path, (2.0, 4.0))
+    assert info["removed"] == 1 and info["inserted"] == 2
+    assert info["track_no"] == 0
+    assert base_path.read_text(encoding="utf-8")  # unchanged
+
+
+def test_snapshot_and_restore_mix(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "な")])
+    _write_ustx(take_path, [NoteInfo(2.1, 2.4, 65.0, "な")])
+    snap = snapshot_mix(base_path)
+    assert snap == [{"mute": False, "solo": False}]
+
+    add_reference_take_into_ustx(base_path, take_path, base_path, (2.0, 4.0), "V2M参考 a")
+    restore_mix_into_ustx(base_path, base_path, snap)
+    result = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    assert result["tracks"][0]["mute"] is False
+    assert result["tracks"][1]["mute"] is True  # reference added after snapshot is muted
 
 
 def test_splice_and_reference_accept_openutau_saved_ustx_without_resolution(tmp_path):

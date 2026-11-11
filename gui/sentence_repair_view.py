@@ -7,6 +7,8 @@ curves so notes can be drawn by hand in OpenUtau.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import pathlib
 
 from PySide6.QtCore import Qt
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
+    QMessageBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -81,6 +84,7 @@ class SentenceRepairInterface(ScrollArea):
         self._base_header: dict | None = None
         self._audio_touched = False
         self._output_touched = False
+        self._loading_context = False
 
         title = SubtitleLabel(self)
         self._bind_tr(lambda: title.setText(tr("repair_title")))
@@ -311,7 +315,7 @@ class SentenceRepairInterface(ScrollArea):
 
     def _build_results_card(self):
         _card, layout = self._card("repair_results")
-        self.results_table = QTableWidget(0, 8, self)
+        self.results_table = QTableWidget(0, 6, self)
         self.results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.results_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -329,6 +333,15 @@ class SentenceRepairInterface(ScrollArea):
         self._bind_tr(lambda: self.btn_reference.setText(tr("repair_reference")))
         self.btn_reference.clicked.connect(self.add_reference_selected)
         row.addWidget(self.btn_reference)
+        self.btn_restore_mix = PushButton(tr("repair_restore_mix"), self, FluentIcon.SYNC)
+        self._bind_tr(lambda: self.btn_restore_mix.setText(tr("repair_restore_mix")))
+        self.btn_restore_mix.clicked.connect(self.restore_mix_selected)
+        self.btn_restore_mix.setEnabled(False)
+        row.addWidget(self.btn_restore_mix)
+        self.btn_restore_backup = PushButton(tr("repair_restore_backup"), self, FluentIcon.SYNC)
+        self._bind_tr(lambda: self.btn_restore_backup.setText(tr("repair_restore_backup")))
+        self.btn_restore_backup.clicked.connect(self.restore_backup_selected)
+        row.addWidget(self.btn_restore_backup)
         self.btn_open_dir = PushButton(tr("repair_open_dir"), self, FluentIcon.FOLDER)
         self._bind_tr(lambda: self.btn_open_dir.setText(tr("repair_open_dir")))
         self.btn_open_dir.clicked.connect(self.open_output_dir)
@@ -351,17 +364,15 @@ class SentenceRepairInterface(ScrollArea):
     def _retranslate_headers(self):
         headers = [
             tr("repair_col_take"),
-            tr("repair_col_engine"),
+            tr("repair_col_lyrics"),
+            tr("repair_col_hint"),
             tr("repair_col_notes"),
             tr("repair_col_min"),
-            tr("repair_col_short"),
-            tr("repair_col_repeat"),
-            tr("repair_col_flags"),
-            tr("repair_col_lyrics"),
+            tr("repair_col_engine"),
         ]
         self.results_table.setHorizontalHeaderLabels(headers)
         self.results_table.resizeColumnsToContents()
-        self.results_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
+        self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
 
     # ---------------------------------------------------------------- helpers
     def log_msg(self, message: str):
@@ -460,9 +471,11 @@ class SentenceRepairInterface(ScrollArea):
         if audio and not self._output_touched:
             stem = pathlib.Path(audio).stem
             self.output_edit.setText(str(pathlib.Path(audio).with_name(f"{stem}_gacha")))
+        self._save_context()
         self._update_window_label()
 
     def _on_lyrics_file_changed(self, _text: str):
+        self._save_context()
         self._reload_lyrics()
 
     def _on_base_changed(self, _text: str):
@@ -475,8 +488,62 @@ class SentenceRepairInterface(ScrollArea):
                 self.log_msg(tr("repair_base_read_failed", err=error))
         if self._base_header:
             self.tempo_spin.setValue(float(self._base_header["bpm"]))
+        self._load_context()
+        self._refresh_restore_mix()
         self._refresh_lyric_combo(keep_value=True)
         self._update_window_label()
+
+    # ------------------------------------------------------- project context
+    def _context_key(self) -> str | None:
+        text = self.base_edit.text().strip()
+        if not text:
+            return None
+        digest = hashlib.sha1(str(pathlib.Path(text).resolve()).encode("utf-8")).hexdigest()[:16]
+        return f"repair_ctx/{digest}"
+
+    def _mix_key(self) -> str | None:
+        key = self._context_key()
+        return f"repair_mix/{key.split('/', 1)[1]}" if key else None
+
+    def _save_context(self):
+        if self._loading_context:
+            return
+        key = self._context_key()
+        if key is None:
+            return
+        self.global_settings.settings.setValue(key, json.dumps({
+            "audio": self.audio_edit.text().strip(),
+            "lyrics": self.lyrics_edit.text().strip(),
+            "output": self.output_edit.text().strip(),
+        }, ensure_ascii=False))
+
+    def _load_context(self):
+        key = self._context_key()
+        if key is None:
+            return
+        raw = self.global_settings.settings.value(key, "")
+        if not raw:
+            return
+        try:
+            ctx = json.loads(raw)
+        except (ValueError, TypeError):
+            return
+        self._loading_context = True
+        try:
+            if ctx.get("audio"):
+                self.audio_edit.setText(ctx["audio"])
+            if ctx.get("lyrics"):
+                self.lyrics_edit.setText(ctx["lyrics"])
+            if ctx.get("output"):
+                self.output_edit.setText(ctx["output"])
+                self._output_touched = True
+        finally:
+            self._loading_context = False
+
+    def _refresh_restore_mix(self):
+        key = self._mix_key()
+        has = bool(key and self.global_settings.settings.value(key, ""))
+        self.btn_restore_mix.setEnabled(has and not self.is_running())
 
     def _on_manual_window_changed(self, _text: str):
         self._update_window_label()
@@ -635,12 +702,14 @@ class SentenceRepairInterface(ScrollArea):
         return True
 
     def _set_running_ui(self, running: bool):
-        for button in (self.btn_gacha, self.btn_curves, self.btn_apply, self.btn_reference):
+        for button in (self.btn_gacha, self.btn_curves, self.btn_apply, self.btn_reference,
+                       self.btn_restore_backup):
             button.setEnabled(not running)
         self.btn_stop.setEnabled(running)
         self.progress_ring.setVisible(running)
         if not running:
             self.status_label.setText("")
+            self._refresh_restore_mix()
 
     def stop_job(self):
         if not self.worker:
@@ -773,6 +842,7 @@ class SentenceRepairInterface(ScrollArea):
             self._show_error(tr("err_cannot_start"), str(error))
             return
 
+        self._save_context()
         self._job_output_dir = output_dir
         self._job_base = pathlib.Path(self.base_edit.text().strip())
         self._job_manifest_path = output_dir / f"{audio.stem}_manifest.json"
@@ -820,6 +890,17 @@ class SentenceRepairInterface(ScrollArea):
         self._start_job(job, kind="curves")
 
     # ---------------------------------------------------------------- results
+    @staticmethod
+    def _flag_hint(diag) -> str:
+        flags = []
+        if diag["short_notes"]:
+            flags.append(tr("repair_flag_short", n=diag["short_notes"]))
+        if diag["repeated_lyric_notes"]:
+            flags.append(tr("repair_flag_repeat", n=diag["repeated_lyric_notes"]))
+        if diag["internal_gaps"]:
+            flags.append(tr("repair_flag_gap", n=diag["internal_gaps"]))
+        return "、".join(flags) if flags else tr("repair_no_flags")
+
     def _populate_results(self, results):
         self._take_labels = []
         self.results_table.setRowCount(0)
@@ -830,18 +911,18 @@ class SentenceRepairInterface(ScrollArea):
             self.results_table.insertRow(row)
             values = [
                 params.label,
-                params.alignment_engine,
+                diag["lyric_sequence"],
+                self._flag_hint(diag),
                 str(diag["note_count"]),
                 f"{diag['min_duration']:.3f}",
-                str(diag["short_notes"]),
-                str(diag["repeated_lyric_notes"]),
-                str(diag["flag_score"]),
-                diag["lyric_sequence"],
+                params.alignment_engine,
             ]
             for column, text in enumerate(values):
                 item = QTableWidgetItem(text)
-                if 2 <= column <= 6:
+                if column >= 2:
                     item.setTextAlignment(Qt.AlignCenter)
+                if column == 2:
+                    item.setToolTip(f"flag_score={diag['flag_score']}")
                 self.results_table.setItem(row, column, item)
             self._take_labels.append(params.label)
         self._retranslate_headers()
@@ -853,8 +934,27 @@ class SentenceRepairInterface(ScrollArea):
         if selected is None:
             return
         from application.sentence_jobs import splice_take_with_handshake
+        from inference.pipeline.sentence_gacha import preview_splice
 
         label, take_path, window = selected
+        try:
+            info = preview_splice(self._job_base, take_path, window)
+        except Exception as error:  # noqa: BLE001
+            self._show_error(tr("fail_title"), str(error))
+            return
+        header = self._base_header or read_ustx_header(self._job_base)
+        bar_start = bar_beat_label(window[0], header)
+        bar_end = bar_beat_label(window[1], header)
+        span = f"{bar_start} - {bar_end}" if bar_start else f"{window[0]:.2f}s"
+        seconds = f"{window[0]:.3f}-{window[1]:.3f}s"
+        reply = QMessageBox.question(
+            self, tr("repair_apply_confirm_title"),
+            tr("repair_apply_confirm", track=info["track_name"], part=info["part_name"],
+               range=span, seconds=seconds, removed=info["removed"], inserted=info["inserted"]),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
         try:
             removed, inserted = splice_take_with_handshake(self._job_base, take_path, self._job_base, window)
         except Exception as error:  # noqa: BLE001
@@ -871,10 +971,12 @@ class SentenceRepairInterface(ScrollArea):
         if selected is None:
             return
         from application.sentence_jobs import add_reference_take_with_handshake
+        from inference.pipeline.sentence_gacha import REFERENCE_TRACK_PREFIX, snapshot_mix
 
         label, take_path, window = selected
-        track_name = f"V2M参考 {label}"
+        track_name = f"{REFERENCE_TRACK_PREFIX} {label}"
         try:
+            snapshot = snapshot_mix(self._job_base)
             inserted = add_reference_take_with_handshake(
                 self._job_base, take_path, self._job_base, window, track_name
             )
@@ -883,9 +985,60 @@ class SentenceRepairInterface(ScrollArea):
                 return
             self._show_error(tr("fail_title"), str(error))
             return
+        key = self._mix_key()
+        if key:
+            self.global_settings.settings.setValue(key, json.dumps(snapshot))
+        self._refresh_restore_mix()
         self._show_success(
             tr("repair_reference_added", track=track_name, inserted=inserted, path=self._job_base)
         )
+
+    def restore_mix_selected(self):
+        from application.sentence_jobs import restore_mix_with_handshake
+
+        key = self._mix_key()
+        raw = self.global_settings.settings.value(key, "") if key else ""
+        if not raw or self._job_base is None:
+            self._show_warning(tr("repair_restore_mix_none"))
+            return
+        try:
+            snapshot = json.loads(raw)
+            restore_mix_with_handshake(self._job_base, snapshot)
+        except Exception as error:  # noqa: BLE001
+            if self._report_save_error(error):
+                return
+            self._show_error(tr("fail_title"), str(error))
+            return
+        self.global_settings.settings.remove(key)
+        self._refresh_restore_mix()
+        self._show_success(tr("repair_restore_mix_done"))
+
+    def restore_backup_selected(self):
+        from application.sentence_jobs import list_backups, restore_backup_with_handshake
+
+        if self._job_base is None:
+            self._show_warning(tr("repair_need_base"))
+            return
+        backups = list_backups(self._job_base)
+        if not backups:
+            self._show_warning(tr("repair_restore_backup_none"))
+            return
+        latest = backups[0]
+        reply = QMessageBox.question(
+            self, tr("repair_restore_backup_confirm_title"),
+            tr("repair_restore_backup_confirm", path=latest),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            restore_backup_with_handshake(self._job_base, latest)
+        except Exception as error:  # noqa: BLE001
+            if self._report_save_error(error):
+                return
+            self._show_error(tr("fail_title"), str(error))
+            return
+        self._show_success(tr("repair_restore_backup_done", path=self._job_base))
 
     def _resolve_selected_take(self):
         if self.is_running():

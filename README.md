@@ -328,14 +328,18 @@ python scripts/sentence_gacha.py --apply gacha/ --take tifa-03 --base song.ustx 
 
 - Point `-o` at the base file itself to patch in place. If a running OpenUtau instance has that
   project open, it is asked to save first (the patch aborts rather than clobber unsaved edits),
-  the file is replaced atomically with a rolling `<stem>_backup.ustx`, and a bridged OpenUtau
-  build reloads the piano roll automatically.
+  the file is replaced atomically with a rolling `<stem>_backup.ustx` plus a timestamped history
+  in `<stem>_backups/` (newest 10 kept), and a bridged OpenUtau build reloads the piano roll
+  automatically. The splice targets the voice part overlapping the window, not blindly the first.
 - The GUI's hard-sentence page prefills the base with the project OpenUtau currently has open,
-  labels each timestamped lyric line with its OpenUtau bar number, and applies takes to that
-  live project.
-- `--reference` (GUI: "Add as Reference") leaves every existing note alone, appends the take as
-  an audible track that reuses the first track's singer and phonemizer, and mutes the main track
-  so the take is heard right away — unmute the main track to A/B and copy the notes you like:
+  remembers the audio/lyrics/output per base project, labels each timestamped lyric line with its
+  OpenUtau bar number, and confirms the target track/part, range and note counts before replacing.
+  "Restore Last Backup" rolls back through the same save handshake.
+- `--reference` (GUI: "Add as Reference") leaves every existing note alone and auditions the take
+  on a single reusable reference track that clones the target track's singer and phonemizer. It
+  mutes the vocal tracks (keeping wave-only accompaniment audible) so the take is heard right away;
+  adding another take replaces that track's part instead of stacking tracks. The GUI's "Restore
+  Mix" returns to your pre-audition mute/solo state, and you can copy notes you like from the part:
 
 ```bash
 python scripts/sentence_gacha.py --apply gacha/ --take tifa-03 --base song.ustx -o song.ustx --reference
