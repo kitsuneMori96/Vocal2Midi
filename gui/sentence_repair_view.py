@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QMessageBox,
     QTableWidget,
     QTableWidgetItem,
@@ -505,6 +506,30 @@ class SentenceRepairInterface(ScrollArea):
         key = self._context_key()
         return f"repair_mix/{key.split('/', 1)[1]}" if key else None
 
+    def _refhash_key(self) -> str | None:
+        key = self._context_key()
+        return f"repair_refhash/{key.split('/', 1)[1]}" if key else None
+
+    def _pick_target_part(self, base_path, window) -> int | None:
+        """Resolve the edit target, asking the user when several parts overlap."""
+        from inference.pipeline.sentence_gacha import AmbiguousTargetError, select_target_part
+
+        base = read_ustx_header(base_path)["project"]
+        try:
+            index, _part = select_target_part(base, window)
+            return index
+        except AmbiguousTargetError as error:
+            items = [
+                f"{c['track_name']} / {c['part_name']}  ({c['overlap']:.2f}s)"
+                for c in error.candidates
+            ]
+            choice, ok = QInputDialog.getItem(
+                self, tr("repair_target_title"), tr("repair_target_prompt"), items, 0, False
+            )
+            if not ok:
+                return None
+            return error.candidates[items.index(choice)]["part_index"]
+
     def _save_context(self):
         if self._loading_context:
             return
@@ -933,13 +958,19 @@ class SentenceRepairInterface(ScrollArea):
         selected = self._resolve_selected_take()
         if selected is None:
             return
-        from application.sentence_jobs import splice_take_with_handshake
+        from application.sentence_jobs import splice_take_with_handshake, sync_and_hash
         from inference.pipeline.sentence_gacha import preview_splice
 
         label, take_path, window = selected
         try:
-            info = preview_splice(self._job_base, take_path, window)
+            expected_hash = sync_and_hash(self._job_base)
+            part_index = self._pick_target_part(self._job_base, window)
+            if part_index is None:
+                return
+            info = preview_splice(self._job_base, take_path, window, part_index)
         except Exception as error:  # noqa: BLE001
+            if self._report_save_error(error):
+                return
             self._show_error(tr("fail_title"), str(error))
             return
         header = self._base_header or read_ustx_header(self._job_base)
@@ -956,7 +987,10 @@ class SentenceRepairInterface(ScrollArea):
         if reply != QMessageBox.Yes:
             return
         try:
-            removed, inserted = splice_take_with_handshake(self._job_base, take_path, self._job_base, window)
+            removed, inserted = splice_take_with_handshake(
+                self._job_base, take_path, self._job_base, window,
+                part_index=part_index, expected_hash=expected_hash,
+            )
         except Exception as error:  # noqa: BLE001
             if self._report_save_error(error):
                 return
@@ -970,24 +1004,46 @@ class SentenceRepairInterface(ScrollArea):
         selected = self._resolve_selected_take()
         if selected is None:
             return
-        from application.sentence_jobs import add_reference_take_with_handshake
-        from inference.pipeline.sentence_gacha import REFERENCE_TRACK_PREFIX, snapshot_mix
+        from application.sentence_jobs import add_reference_take_with_handshake, sync_and_hash
+        from inference.pipeline.sentence_gacha import (
+            REFERENCE_TRACK_PREFIX,
+            reference_fingerprint,
+            snapshot_mix,
+        )
 
         label, take_path, window = selected
         track_name = f"{REFERENCE_TRACK_PREFIX} {label}"
+        mix_key = self._mix_key()
+        refhash_key = self._refhash_key()
+        first_audition = not (mix_key and self.global_settings.settings.value(mix_key, ""))
         try:
-            snapshot = snapshot_mix(self._job_base)
+            expected_hash = sync_and_hash(self._job_base)
+            if refhash_key:
+                stored = self.global_settings.settings.value(refhash_key, "")
+                if stored and stored != reference_fingerprint(self._job_base):
+                    reply = QMessageBox.question(
+                        self, tr("repair_ref_edited_title"), tr("repair_ref_edited"),
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                    )
+                    if reply != QMessageBox.Yes:
+                        return
+            part_index = self._pick_target_part(self._job_base, window)
+            if part_index is None:
+                return
+            snapshot = snapshot_mix(self._job_base) if first_audition else None
             inserted = add_reference_take_with_handshake(
-                self._job_base, take_path, self._job_base, window, track_name
+                self._job_base, take_path, self._job_base, window, track_name,
+                part_index=part_index, expected_hash=expected_hash,
             )
         except Exception as error:  # noqa: BLE001
             if self._report_save_error(error):
                 return
             self._show_error(tr("fail_title"), str(error))
             return
-        key = self._mix_key()
-        if key:
-            self.global_settings.settings.setValue(key, json.dumps(snapshot))
+        if first_audition and mix_key and snapshot is not None:
+            self.global_settings.settings.setValue(mix_key, json.dumps(snapshot))
+        if refhash_key:
+            self.global_settings.settings.setValue(refhash_key, reference_fingerprint(self._job_base))
         self._refresh_restore_mix()
         self._show_success(
             tr("repair_reference_added", track=track_name, inserted=inserted, path=self._job_base)
@@ -1066,7 +1122,11 @@ class SentenceRepairInterface(ScrollArea):
 
     def _report_save_error(self, error) -> bool:
         from application.openutau_bridge import OpenUtauSaveError
+        from application.sentence_jobs import BaseChangedError
 
+        if isinstance(error, BaseChangedError):
+            self._show_warning(tr("repair_base_changed"))
+            return True
         if not isinstance(error, OpenUtauSaveError):
             return False
         key = {

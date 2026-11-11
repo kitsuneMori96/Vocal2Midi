@@ -118,3 +118,38 @@ def test_separate_output_skips_handshake(tmp_path, monkeypatch):
     assert (removed, inserted) == (1, 1)
     assert out.is_file()
     assert "old" in base.read_text(encoding="utf-8")
+
+
+def test_rapid_patches_keep_unique_backups(tmp_path, monkeypatch):
+    from application.sentence_jobs import list_backups
+
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    base = _write_ustx(tmp_path / "song.ustx", [NoteInfo(2.2, 2.6, 62.0, "v1")])
+    take = _write_ustx(tmp_path / "take.ustx", [NoteInfo(2.1, 2.4, 65.0, "v2")])
+
+    # Two patches within the same second must not collide on the backup name.
+    splice_take_with_handshake(base, take, base, (2.0, 4.0))
+    splice_take_with_handshake(base, take, base, (2.0, 4.0))
+    history = list_backups(base)
+    assert len(history) == 2
+    assert len({p.name for p in history}) == 2
+
+
+def test_expected_hash_guard_aborts_on_concurrent_edit(tmp_path, monkeypatch):
+    from application.sentence_jobs import BaseChangedError, file_sha256
+
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    base = _write_ustx(tmp_path / "song.ustx", [NoteInfo(2.2, 2.6, 62.0, "old")])
+    take = _write_ustx(tmp_path / "take.ustx", [NoteInfo(2.1, 2.4, 65.0, "new")])
+    stale_hash = file_sha256(base)
+    # Simulate an edit landing after confirmation but before the patch.
+    base.write_text(base.read_text(encoding="utf-8").replace("old", "edited"), encoding="utf-8")
+    before = base.read_text(encoding="utf-8")
+
+    try:
+        splice_take_with_handshake(base, take, base, (2.0, 4.0), expected_hash=stale_hash)
+        raise AssertionError("expected BaseChangedError")
+    except BaseChangedError:
+        pass
+    assert base.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "song_backup.ustx").exists()

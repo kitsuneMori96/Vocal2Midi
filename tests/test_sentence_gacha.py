@@ -7,6 +7,7 @@ from inference.API.ustx_api import save_ustx
 from inference.LyricFA.tools.lyric_matcher import strip_lrc_markup
 from inference.io.note_io import NoteInfo
 from inference.pipeline.sentence_gacha import (
+    AmbiguousTargetError,
     _note_diagnostics,
     add_reference_take_into_ustx,
     build_takes,
@@ -14,6 +15,7 @@ from inference.pipeline.sentence_gacha import (
     load_manifest,
     parse_lyric_lines,
     preview_splice,
+    reference_fingerprint,
     resolve_window,
     restore_mix_into_ustx,
     select_line,
@@ -287,7 +289,9 @@ def test_snapshot_and_restore_mix(tmp_path):
     _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "な")])
     _write_ustx(take_path, [NoteInfo(2.1, 2.4, 65.0, "な")])
     snap = snapshot_mix(base_path)
-    assert snap == [{"mute": False, "solo": False}]
+    assert len(snap) == 1
+    assert snap[0]["mute"] is False and snap[0]["solo"] is False
+    assert "name" in snap[0]
 
     add_reference_take_into_ustx(base_path, take_path, base_path, (2.0, 4.0), "V2M参考 a")
     restore_mix_into_ustx(base_path, base_path, snap)
@@ -332,3 +336,103 @@ def test_manifest_round_trip(tmp_path):
     path = tmp_path / "gacha_manifest.json"
     path.write_text(json.dumps({"window_start": 1.0, "window_end": 2.0, "takes": []}), encoding="utf-8")
     assert load_manifest(path)["window_start"] == 1.0
+
+
+def _two_part_base(base_path):
+    base = _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "main")])
+    base["voice_parts"].append({
+        "position": 0, "duration": 4800, "name": "harmony", "track_no": 0,
+        "notes": [{"position": 2160, "duration": 480, "lyric": "harm"}],
+        "curves": [], "masked_curves": [],
+    })
+    base_path.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return base
+
+
+def test_ambiguous_target_requires_explicit_choice(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    base = _two_part_base(base_path)
+    _write_ustx(take_path, [NoteInfo(2.1, 2.4, 65.0, "new")])
+
+    with pytest.raises(AmbiguousTargetError) as excinfo:
+        select_target_part(base, (2.0, 4.0))
+    assert {c["part_index"] for c in excinfo.value.candidates} == {0, 1}
+    with pytest.raises(AmbiguousTargetError):
+        splice_take_into_ustx(base_path, take_path, tmp_path / "out.ustx", (2.0, 4.0))
+
+    index, part = select_target_part(base, (2.0, 4.0), part_index=1)
+    assert index == 1 and part["name"] == "harmony"
+    removed, inserted = splice_take_into_ustx(
+        base_path, take_path, tmp_path / "out.ustx", (2.0, 4.0), part_index=1
+    )
+    assert (removed, inserted) == (1, 1)
+
+
+def test_reference_part_is_never_the_edit_target(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "main")])
+    _write_ustx(take_path, [NoteInfo(2.1, 2.4, 65.0, "new")])
+    add_reference_take_into_ustx(base_path, take_path, base_path, (2.0, 4.0), "V2M参考 a")
+
+    base = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    # Only the main part remains editable; the reference part is excluded.
+    index, part = select_target_part(base, (2.0, 4.0))
+    assert index == 0 and part["track_no"] == 0
+    with pytest.raises(ValueError, match="reference"):
+        select_target_part(base, (2.0, 4.0), part_index=1)
+
+
+def test_reference_mutes_only_target_main_keeps_harmony(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    base = _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "main")])
+    # A second vocal (harmony) track with its own part must stay audible.
+    base["tracks"].append({**base["tracks"][0], "track_name": "和声", "mute": False})
+    base["voice_parts"].append({
+        "position": 0, "duration": 4800, "name": "harmony", "track_no": 1,
+        "notes": [{"position": 960, "duration": 480, "lyric": "harm"}],
+        "curves": [], "masked_curves": [],
+    })
+    base_path.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    _write_ustx(take_path, [NoteInfo(2.1, 2.4, 65.0, "new")])
+
+    add_reference_take_into_ustx(base_path, take_path, base_path, (2.0, 4.0), "V2M参考 a", part_index=0)
+    result = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    assert result["tracks"][0]["mute"] is True   # target main muted
+    assert result["tracks"][1]["mute"] is False  # harmony untouched
+    assert result["tracks"][2]["mute"] is False  # reference audible
+
+
+def test_restore_mix_by_name_survives_reorder(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    base = _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "main")])
+    base["tracks"].append({**base["tracks"][0], "track_name": "和声", "mute": False})
+    base_path.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    snap = snapshot_mix(base_path)
+
+    # Reorder tracks and mute the harmony, then restore by name.
+    base["tracks"] = [base["tracks"][1], base["tracks"][0]]
+    base["tracks"][0]["mute"] = True
+    base_path.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    restore_mix_into_ustx(base_path, base_path, snap)
+    result = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    by_name = {t["track_name"]: t for t in result["tracks"]}
+    assert by_name["和声"]["mute"] is False
+    assert by_name[snap[0]["name"]]["mute"] is False
+
+
+def test_reference_fingerprint_detects_hand_edit(tmp_path):
+    base_path = tmp_path / "base.ustx"
+    take_path = tmp_path / "take.ustx"
+    _write_ustx(base_path, [NoteInfo(2.2, 2.6, 62.0, "main")])
+    _write_ustx(take_path, [NoteInfo(2.1, 2.4, 65.0, "new")])
+    add_reference_take_into_ustx(base_path, take_path, base_path, (2.0, 4.0), "V2M参考 a")
+    before = reference_fingerprint(base_path)
+
+    base = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    ref_part = next(p for p in base["voice_parts"] if p["track_no"] == 1)
+    ref_part["notes"][0]["lyric"] = "edited"
+    base_path.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    assert reference_fingerprint(base_path) != before

@@ -310,6 +310,20 @@ _STRINGS: dict[str, dict[str, str]] = {
     "repair_select_take": {"zh": "请先在表格里选中一个候选", "en": "Select a candidate row first"},
     "repair_lyrics_read_failed": {"zh": "读取歌词失败: {err}", "en": "Failed to read lyrics: {err}"},
     "repair_base_read_failed": {"zh": "读取底稿失败: {err}", "en": "Failed to read the base USTX: {err}"},
+    "repair_target_title": {"zh": "选择目标片段", "en": "Choose Target Part"},
+    "repair_target_prompt": {
+        "zh": "窗口内有多个可编辑片段，请选择要修改的那一个（参考轨不参与）：",
+        "en": "Several editable parts overlap the window; pick the one to edit (reference tracks excluded):",
+    },
+    "repair_base_changed": {
+        "zh": "底稿在确认后被改动，已取消本次写入。请重新预览并确认。",
+        "en": "The base changed after confirmation; this write was cancelled. Preview and confirm again.",
+    },
+    "repair_ref_edited_title": {"zh": "参考轨已被手改", "en": "Reference Track Edited"},
+    "repair_ref_edited": {
+        "zh": "参考轨的音符在你加入后被手动修改过。继续会用新候选覆盖这些手改，是否继续？",
+        "en": "The reference part's notes were hand-edited since you added them. Continuing replaces those edits with the new take. Continue?",
+    },
 }
 
 

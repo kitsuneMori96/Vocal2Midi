@@ -335,3 +335,46 @@ def test_function_worker_returns_result():
     worker.start()
     assert worker.wait(5000)
     assert worker.result == "done"
+
+
+def test_continuous_reference_keeps_first_snapshot(page, tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    _select_take(
+        page, tmp_path,
+        [{"position": 12000, "duration": 480, "lyric": "old"}],
+        [{"position": 10500, "duration": 240, "lyric": "new"}],
+    )
+    page.add_reference_selected()
+    key = page._mix_key()
+    first = page.global_settings.settings.value(key, "")
+    page.add_reference_selected()
+    second = page.global_settings.settings.value(key, "")
+    assert first == second  # continuous swaps never overwrite the first snapshot
+    assert json.loads(first)[0]["mute"] is False  # pre-audition main state
+
+
+def test_reference_hand_edit_prompts_before_replace(page, tmp_path, monkeypatch):
+    monkeypatch.setattr("application.openutau_bridge._running_openutau_dirs", lambda: [])
+    base = _select_take(
+        page, tmp_path,
+        [{"position": 12000, "duration": 480, "lyric": "old"}],
+        [{"position": 10500, "duration": 240, "lyric": "new"}],
+    )
+    page.add_reference_selected()
+    data = yaml.safe_load(base.read_text(encoding="utf-8"))
+    ref = next(p for p in data["voice_parts"] if p.get("track_no") == 1)
+    ref["notes"][0]["lyric"] = "edited"
+    base.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    calls = []
+    monkeypatch.setattr(
+        "gui.sentence_repair_view.QMessageBox.question",
+        lambda *a, **k: calls.append(a) or QMessageBox.No,
+    )
+    page.add_reference_selected()
+    assert calls  # asked before overwriting hand edits
+    result = yaml.safe_load(base.read_text(encoding="utf-8"))
+    ref_after = next(p for p in result["voice_parts"] if p.get("track_no") == 1)
+    assert ref_after["notes"][0]["lyric"] == "edited"  # declined → untouched

@@ -273,17 +273,21 @@ For passages the decoder gets wrong, the pipeline can be rerun on a single lyric
 
 - `inference/pipeline/sentence_gacha.py` — parse timestamped lyric lines, resolve the audio
   window, build a grid of decoding parameters (`TakeParams`), run the takes, diagnose each
-  result, write reports/manifests. `select_target_part()` picks the voice part overlapping the
-  window (note times include the part offset); `splice_take_into_ustx()` replaces that part's
-  window notes and `preview_splice()` dry-runs the counts/target for the confirm dialog.
-  `add_reference_take_into_ustx()` auditions the take on one reusable `V2M参考` track cloning the
-  target track's singer/phonemizer, muting vocal tracks while keeping wave-only accompaniment;
-  `snapshot_mix()` / `restore_mix_into_ustx()` save and restore per-track mute/solo.
+  result, write reports/manifests. `select_target_part()` picks the non-reference voice part
+  overlapping the window (note times include the part offset), raising `AmbiguousTargetError`
+  when several parts overlap so the caller asks instead of guessing; an explicit `part_index`
+  overrides it. `splice_take_into_ustx()` replaces that part's window notes and `preview_splice()`
+  dry-runs the counts/target for the confirm dialog. `add_reference_take_into_ustx()` auditions the
+  take on one reusable `V2M参考` track cloning the target track's singer/phonemizer, muting only the
+  target main track while harmony and wave-only accompaniment stay audible; `snapshot_mix()` /
+  `restore_mix_into_ustx()` save and restore per-track mute/solo keyed by track name (reorder-safe),
+  and `reference_fingerprint()` hashes the reference part's notes to detect hand edits.
 - `application/sentence_jobs.py` — GUI/CLI-shared jobs: `export_reference_curves()`,
   `splice_take_with_handshake()`, `add_reference_take_with_handshake()`,
   `restore_mix_with_handshake()` and `restore_backup_with_handshake()` (in-place write with a
-  rolling `<stem>_backup.ustx` plus a timestamped `<stem>_backups/` history, newest 10 kept;
-  `list_backups()`), `bar_beat_label()` for OpenUtau-style positions.
+  rolling `<stem>_backup.ustx` plus a microsecond-timestamped `<stem>_backups/` history, newest 10
+  kept; `list_backups()`), `sync_and_hash()` + an `expected_hash` guard (`BaseChangedError`) so a
+  confirmation is bound to the saved version, `bar_beat_label()` for OpenUtau-style positions.
 - `application/openutau_bridge.py` — find the running OpenUtau instance (process snapshot →
   data dir → `prefs.json` recents), default the base USTX to its open project, and run the
   save handshake in `<DataPath>/v2m-bridge/` (`save-request.json` → `save-response.json`).

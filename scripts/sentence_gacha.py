@@ -126,18 +126,21 @@ def build_argparser(defaults: dict) -> argparse.ArgumentParser:
     apply_group.add_argument("--take", default=None, help="Take label to splice (e.g. tifa-03)")
     apply_group.add_argument("--reference", action="store_true",
                              help="Audition the take on a reusable reference track (cloning the target "
-                                  "track's singer/phonemizer); mutes the vocal tracks, keeps accompaniment, "
-                                  "instead of replacing notes")
+                                  "track's singer/phonemizer); mutes only the target main track, keeps "
+                                  "harmony/accompaniment, instead of replacing notes")
     apply_group.add_argument("--base", type=Path, default=None,
                              help="Full-song USTX to patch; set -o to the same path to patch in place "
                                   "(a running OpenUtau saves first, then reloads the file)")
+    apply_group.add_argument("--part-index", type=int, default=None,
+                             help="0-based voice_part to edit; required when several parts overlap the "
+                                  "window (reference parts are never editable)")
     return parser
 
 
 def _run_apply(args) -> int:
     from application.openutau_bridge import OpenUtauSaveError
     from application.sentence_jobs import add_reference_take_with_handshake, splice_take_with_handshake
-    from inference.pipeline.sentence_gacha import load_manifest
+    from inference.pipeline.sentence_gacha import AmbiguousTargetError, load_manifest
 
     if not args.take:
         logger.error("--apply needs --take")
@@ -175,14 +178,26 @@ def _run_apply(args) -> int:
     try:
         if args.reference:
             inserted = add_reference_take_with_handshake(
-                args.base, take_path, out_path, window, f"V2M参考 {args.take}"
+                args.base, take_path, out_path, window, f"V2M参考 {args.take}",
+                part_index=args.part_index,
             )
             logger.info(
                 f"Added reference track for {args.take} into {out_path} "
                 f"({window[0]:.3f}-{window[1]:.3f}s, {inserted} notes; main track muted)."
             )
             return 0
-        removed, inserted = splice_take_with_handshake(args.base, take_path, out_path, window)
+        removed, inserted = splice_take_with_handshake(
+            args.base, take_path, out_path, window, part_index=args.part_index
+        )
+    except AmbiguousTargetError as error:
+        logger.error(str(error))
+        for candidate in error.candidates:
+            logger.error(
+                f"  --part-index {candidate['part_index']}: "
+                f"{candidate['track_name']} / {candidate['part_name']} "
+                f"({candidate['overlap']:.3f}s overlap)"
+            )
+        return 2
     except OpenUtauSaveError as error:
         if error.reason == "no-bridge":
             logger.error(

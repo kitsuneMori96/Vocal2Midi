@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import time
+import hashlib
+from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 
@@ -49,6 +50,28 @@ def bar_beat_label(seconds: float, header: dict) -> str:
 BACKUP_HISTORY_LIMIT = 10
 
 
+class BaseChangedError(RuntimeError):
+    """The base USTX changed between confirmation and the in-place patch."""
+
+
+def file_sha256(path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def sync_and_hash(base_path, *, save_timeout: float = 10.0) -> str:
+    """Ask OpenUtau to save, then hash the on-disk base for a version guard.
+
+    Returns immediately with the current hash when no running instance has the
+    project open. The caller previews/confirms against this hash and passes it
+    back as ``expected_hash`` so a concurrent edit aborts the patch.
+    """
+    from application.openutau_bridge import request_save
+
+    base_path = Path(base_path)
+    request_save(base_path, timeout=save_timeout)
+    return file_sha256(base_path)
+
+
 def _backup_dir(base_path: Path) -> Path:
     return base_path.with_name(base_path.stem + "_backups")
 
@@ -58,7 +81,8 @@ def _record_backup(base_path: Path) -> None:
     shutil.copy2(base_path, base_path.with_name(base_path.stem + "_backup.ustx"))
     history = _backup_dir(base_path)
     history.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+    # Microseconds keep two patches in the same second from colliding.
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     shutil.copy2(base_path, history / f"{base_path.stem}-{stamp}.ustx")
     saved = sorted(history.glob(f"{base_path.stem}-*.ustx"))
     for old in saved[:-BACKUP_HISTORY_LIMIT]:
@@ -75,13 +99,15 @@ def list_backups(base_path) -> list[Path]:
     return [rolling] if rolling.is_file() else []
 
 
-def _patch_ustx(base_path, out_path, transform, *, save_timeout: float = 10.0):
+def _patch_ustx(base_path, out_path, transform, *, save_timeout: float = 10.0, expected_hash: str | None = None):
     """Run a USTX transform, syncing with a running OpenUtau when in place.
 
     Writing to the base file itself first asks OpenUtau to save and waits for
     its ack (OpenUtauSaveError when it cannot), then writes atomically and
     records a rolling backup plus a timestamped history. Any other output path
-    leaves the base untouched and needs no handshake.
+    leaves the base untouched and needs no handshake. When ``expected_hash`` is
+    given the freshly saved base must still match it, else BaseChangedError is
+    raised so a concurrent edit is never clobbered.
     """
     from application.openutau_bridge import request_save
 
@@ -90,6 +116,8 @@ def _patch_ustx(base_path, out_path, transform, *, save_timeout: float = 10.0):
     if out_path.resolve() != base_path.resolve():
         return transform(base_path, out_path)
     request_save(base_path, timeout=save_timeout)
+    if expected_hash is not None and file_sha256(base_path) != expected_hash:
+        raise BaseChangedError("base USTX changed since confirmation")
     tmp = base_path.with_name(base_path.stem + ".v2m-tmp.ustx")
     try:
         result = transform(base_path, tmp)
@@ -127,29 +155,30 @@ def restore_mix_with_handshake(base_path, snapshot, *, save_timeout: float = 10.
 
 
 def splice_take_with_handshake(
-    base_path, take_path, out_path, window: tuple[float, float], *, save_timeout: float = 10.0
+    base_path, take_path, out_path, window: tuple[float, float], *,
+    part_index: int | None = None, save_timeout: float = 10.0, expected_hash: str | None = None,
 ) -> tuple[int, int]:
     """Replace base notes in the window with the take, syncing when in place."""
     from inference.pipeline.sentence_gacha import splice_take_into_ustx
 
     return _patch_ustx(
         base_path, out_path,
-        lambda base, out: splice_take_into_ustx(base, take_path, out, window),
-        save_timeout=save_timeout,
+        lambda base, out: splice_take_into_ustx(base, take_path, out, window, part_index),
+        save_timeout=save_timeout, expected_hash=expected_hash,
     )
 
 
 def add_reference_take_with_handshake(
     base_path, take_path, out_path, window: tuple[float, float], track_name: str,
-    *, save_timeout: float = 10.0,
+    *, part_index: int | None = None, save_timeout: float = 10.0, expected_hash: str | None = None,
 ) -> int:
-    """Add the take as a muted reference track, syncing when written in place."""
+    """Add the take as an audible reference track, syncing when written in place."""
     from inference.pipeline.sentence_gacha import add_reference_take_into_ustx
 
     return _patch_ustx(
         base_path, out_path,
-        lambda base, out: add_reference_take_into_ustx(base, take_path, out, window, track_name),
-        save_timeout=save_timeout,
+        lambda base, out: add_reference_take_into_ustx(base, take_path, out, window, track_name, part_index),
+        save_timeout=save_timeout, expected_hash=expected_hash,
     )
 
 

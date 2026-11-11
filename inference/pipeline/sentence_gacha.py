@@ -9,6 +9,7 @@ full-song USTX.
 from __future__ import annotations
 
 import itertools
+import hashlib
 import json
 import logging
 import random
@@ -607,27 +608,90 @@ def _seconds_to_ticks(seconds: float, resolution: int, bpm: float) -> int:
     return int(round(seconds * bpm / 60.0 * resolution))
 
 
-def select_target_part(base: dict, window: tuple[float, float]) -> tuple[int, dict]:
-    """The voice part whose notes overlap the window most (first part on ties)."""
+class AmbiguousTargetError(ValueError):
+    """Several non-reference parts overlap the window; the caller must pick one."""
+
+    def __init__(self, candidates: list[dict]):
+        self.candidates = candidates
+        listing = ", ".join(
+            f"[{c['part_index']}] {c['track_name']}/{c['part_name']}" for c in candidates
+        )
+        super().__init__(f"multiple parts overlap the window: {listing}; choose one explicitly")
+
+
+def _reference_track_indices(base: dict) -> set[int]:
+    tracks = base.get("tracks") or []
+    return {
+        i for i, t in enumerate(tracks)
+        if str(t.get("track_name", "")).startswith(REFERENCE_TRACK_PREFIX)
+    }
+
+
+def _part_overlap(part: dict, window: tuple[float, float], res: int, bpm: float) -> float:
+    start, end = window
+    total = 0.0
+    for note in part.get("notes") or []:
+        ns, ne = _part_note_span(part, note, res, bpm)
+        total += max(0.0, min(ne, end) - max(ns, start))
+    if total == 0.0:
+        ps = _part_offset(part) / res * 60.0 / bpm
+        pe = ps + int(part.get("duration") or 0) / res * 60.0 / bpm
+        total = max(0.0, min(pe, end) - max(ps, start))
+    return total
+
+
+def _describe_part(base: dict, index: int, overlap: float) -> dict:
+    part = (base.get("voice_parts") or [])[index]
+    tracks = base.get("tracks") or []
+    track_no = int(part.get("track_no") or 0)
+    track_name = tracks[track_no].get("track_name", "") if track_no < len(tracks) else ""
+    return {
+        "part_index": index,
+        "track_no": track_no,
+        "track_name": track_name or "",
+        "part_name": part.get("name") or "",
+        "overlap": round(overlap, 4),
+    }
+
+
+def select_target_part(
+    base: dict, window: tuple[float, float], part_index: int | None = None
+) -> tuple[int, dict]:
+    """The voice part to edit, never a managed reference part.
+
+    With an explicit ``part_index`` that part is used (reference parts are
+    rejected). Otherwise the non-reference part overlapping the window most is
+    chosen; if more than one overlaps, :class:`AmbiguousTargetError` is raised so
+    the caller asks the user instead of guessing.
+    """
     parts = base.get("voice_parts") or []
     if not parts:
         raise ValueError("base USTX has no voice part to edit")
     res = int(base.get("resolution") or 480)
     bpm = float(base["bpm"])
-    start, end = window
+    ref_tracks = _reference_track_indices(base)
 
-    def overlap(part: dict) -> float:
-        total = 0.0
-        for note in part.get("notes") or []:
-            ns, ne = _part_note_span(part, note, res, bpm)
-            total += max(0.0, min(ne, end) - max(ns, start))
-        if total == 0.0:
-            ps = _part_offset(part) / res * 60.0 / bpm
-            pe = ps + int(part.get("duration") or 0) / res * 60.0 / bpm
-            total = max(0.0, min(pe, end) - max(ps, start))
-        return total
+    if part_index is not None:
+        if not 0 <= part_index < len(parts):
+            raise ValueError(f"part index {part_index} out of range (0..{len(parts) - 1})")
+        part = parts[part_index]
+        if int(part.get("track_no") or 0) in ref_tracks:
+            raise ValueError("cannot edit a V2M reference part as the main target")
+        return part_index, part
 
-    index = max(range(len(parts)), key=lambda i: overlap(parts[i]))
+    editable = [i for i, p in enumerate(parts) if int(p.get("track_no") or 0) not in ref_tracks]
+    if not editable:
+        raise ValueError("base USTX has no non-reference voice part to edit")
+    overlaps = {i: _part_overlap(parts[i], window, res, bpm) for i in editable}
+    candidates = [i for i in editable if overlaps[i] > 0.0]
+    if len(candidates) > 1:
+        raise AmbiguousTargetError(
+            [_describe_part(base, i, overlaps[i]) for i in candidates]
+        )
+    if len(candidates) == 1:
+        index = candidates[0]
+    else:
+        index = editable[0]
     return index, parts[index]
 
 
@@ -678,11 +742,13 @@ def splice_take_into_ustx(
     take_ustx: Path,
     out_ustx: Path,
     window: tuple[float, float],
+    part_index: int | None = None,
 ) -> tuple[int, int]:
     """Replace the target part's notes inside the window with the take's notes.
 
-    The target part is the one overlapping the window most. Returns
-    (removed, inserted); curves and expressions are left untouched.
+    The target part is the non-reference one overlapping the window most, or
+    ``part_index`` when given. Returns (removed, inserted); curves and
+    expressions are left untouched.
     """
     base = _load_ustx(base_ustx)
     take = _load_ustx(take_ustx)
@@ -692,7 +758,7 @@ def splice_take_into_ustx(
     take_res = int(take.get("resolution") or 480)
     take_bpm = float(take["bpm"])
 
-    _index, base_part = select_target_part(base, window)
+    _index, base_part = select_target_part(base, window, part_index)
     kept, removed, inserted = _splice_part_notes(
         base_part, take["voice_parts"][0], window, base_res, base_bpm, take_res, take_bpm
     )
@@ -704,7 +770,9 @@ def splice_take_into_ustx(
     return removed, inserted
 
 
-def preview_splice(base_ustx: Path, take_ustx: Path, window: tuple[float, float]) -> dict:
+def preview_splice(
+    base_ustx: Path, take_ustx: Path, window: tuple[float, float], part_index: int | None = None
+) -> dict:
     """Dry-run splice: target track/part and note counts, without writing."""
     base = _load_ustx(base_ustx)
     take = _load_ustx(take_ustx)
@@ -712,7 +780,7 @@ def preview_splice(base_ustx: Path, take_ustx: Path, window: tuple[float, float]
     base_bpm = float(base["bpm"])
     take_res = int(take.get("resolution") or 480)
     take_bpm = float(take["bpm"])
-    _index, part = select_target_part(base, window)
+    index, part = select_target_part(base, window, part_index)
     tracks = base.get("tracks") or []
     track_no = int(part.get("track_no") or 0)
     track_name = tracks[track_no].get("track_name", "") if track_no < len(tracks) else ""
@@ -720,6 +788,7 @@ def preview_splice(base_ustx: Path, take_ustx: Path, window: tuple[float, float]
         part, take["voice_parts"][0], window, base_res, base_bpm, take_res, take_bpm
     )
     return {
+        "part_index": index,
         "track_no": track_no,
         "track_name": track_name or "",
         "part_name": part.get("name") or "",
@@ -734,15 +803,16 @@ def add_reference_take_into_ustx(
     out_ustx: Path,
     window: tuple[float, float],
     track_name: str,
+    part_index: int | None = None,
 ) -> int:
     """Audition the take on a single reusable reference track.
 
     The reference track clones the target part's singer/phonemizer. Adding
     another take replaces that track's part instead of accumulating tracks.
-    For the audition every vocal track except the reference is muted (and
-    un-soloed) while wave-only accompaniment tracks keep their mute state, so
-    the take is heard immediately over the backing. Existing notes and curves
-    are untouched. Returns the inserted note count.
+    For the audition only the target main track is muted (and un-soloed) plus
+    any managed reference tracks stay audible; harmony and accompaniment tracks
+    keep their own mute state. Existing notes and curves are untouched. Returns
+    the inserted note count.
     """
     base = _load_ustx(base_ustx)
     take = _load_ustx(take_ustx)
@@ -756,7 +826,7 @@ def add_reference_take_into_ustx(
     take_bpm = float(take["bpm"])
     start, end = window
 
-    _index, target_part = select_target_part(base, window)
+    _index, target_part = select_target_part(base, window, part_index)
     template_no = int(target_part.get("track_no") or 0)
     template = tracks[template_no] if template_no < len(tracks) else tracks[0]
 
@@ -777,13 +847,16 @@ def add_reference_take_into_ustx(
         parts = [p for p in parts if int(p.get("track_no") or 0) != ref_index]
         base["voice_parts"] = parts
 
-    vocal_tracks = {int(p.get("track_no") or 0) for p in parts}
+    # Mute only the target main track so the reference is heard over the
+    # untouched harmony/accompaniment; managed reference tracks stay audible.
+    ref_tracks = _reference_track_indices(base)
     for i, track in enumerate(tracks):
-        if i == ref_index:
-            continue
-        track["solo"] = False
-        if i in vocal_tracks:
+        if i in ref_tracks:
+            track["mute"] = False
+            track["solo"] = False
+        elif i == template_no:
             track["mute"] = True
+            track["solo"] = False
 
     notes = []
     for note in take["voice_parts"][0].get("notes") or []:
@@ -816,26 +889,67 @@ def add_reference_take_into_ustx(
 
 
 def snapshot_mix(ustx_path: Path) -> list[dict]:
-    """Per-track mute/solo state, to restore after an audition."""
+    """Per-track name + mute/solo state, to restore after an audition.
+
+    Keyed by track name so a later reorder of tracks does not mis-apply the
+    snapshot. Duplicate names keep their first occurrence's state.
+    """
     base = _load_ustx(ustx_path)
-    return [
-        {"mute": bool(t.get("mute")), "solo": bool(t.get("solo"))}
-        for t in base.get("tracks") or []
-    ]
+    seen: set[str] = set()
+    snapshot: list[dict] = []
+    for t in base.get("tracks") or []:
+        name = str(t.get("track_name", ""))
+        if name in seen:
+            continue
+        seen.add(name)
+        snapshot.append({
+            "name": name,
+            "mute": bool(t.get("mute")),
+            "solo": bool(t.get("solo")),
+        })
+    return snapshot
 
 
 def restore_mix_into_ustx(base_ustx: Path, out_ustx: Path, snapshot: list[dict]) -> None:
-    """Restore a saved mute/solo snapshot; tracks added since are muted."""
+    """Restore a saved mute/solo snapshot by track name.
+
+    Tracks not present in the snapshot (e.g. a reference track added during the
+    audition) are muted; named tracks recover their recorded state regardless of
+    their current order.
+    """
     base = _load_ustx(base_ustx)
+    by_name = {str(s.get("name", "")): s for s in snapshot}
     tracks = base.get("tracks") or []
-    for i, track in enumerate(tracks):
-        if i < len(snapshot):
-            track["mute"] = bool(snapshot[i]["mute"])
-            track["solo"] = bool(snapshot[i]["solo"])
+    for track in tracks:
+        state = by_name.get(str(track.get("track_name", "")))
+        if state is not None:
+            track["mute"] = bool(state["mute"])
+            track["solo"] = bool(state["solo"])
         else:
             track["mute"] = True
             track["solo"] = False
     _write_ustx(out_ustx, base)
+
+
+def reference_fingerprint(ustx_path: Path) -> str:
+    """Stable hash of the managed reference part's notes.
+
+    Used to detect whether the user hand-edited a reference part since it was
+    added, so a later audition does not silently overwrite those edits.
+    """
+    base = _load_ustx(ustx_path)
+    ref_tracks = _reference_track_indices(base)
+    payload = []
+    for part in base.get("voice_parts") or []:
+        if int(part.get("track_no") or 0) not in ref_tracks:
+            continue
+        for note in part.get("notes") or []:
+            payload.append([
+                note.get("position"), note.get("duration"),
+                note.get("tone"), note.get("lyric"),
+            ])
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
 
 def load_manifest(path: Path) -> dict:

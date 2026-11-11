@@ -330,16 +330,21 @@ python scripts/sentence_gacha.py --apply gacha/ --take tifa-03 --base song.ustx 
   project open, it is asked to save first (the patch aborts rather than clobber unsaved edits),
   the file is replaced atomically with a rolling `<stem>_backup.ustx` plus a timestamped history
   in `<stem>_backups/` (newest 10 kept), and a bridged OpenUtau build reloads the piano roll
-  automatically. The splice targets the voice part overlapping the window, not blindly the first.
+  automatically. The splice targets the non-reference voice part overlapping the window; when
+  several parts overlap it asks you to choose (`--part-index` on the CLI) instead of guessing, and
+  the confirmation is bound to the saved file (a concurrent edit aborts the patch).
 - The GUI's hard-sentence page prefills the base with the project OpenUtau currently has open,
   remembers the audio/lyrics/output per base project, labels each timestamped lyric line with its
   OpenUtau bar number, and confirms the target track/part, range and note counts before replacing.
   "Restore Last Backup" rolls back through the same save handshake.
 - `--reference` (GUI: "Add as Reference") leaves every existing note alone and auditions the take
   on a single reusable reference track that clones the target track's singer and phonemizer. It
-  mutes the vocal tracks (keeping wave-only accompaniment audible) so the take is heard right away;
-  adding another take replaces that track's part instead of stacking tracks. The GUI's "Restore
-  Mix" returns to your pre-audition mute/solo state, and you can copy notes you like from the part:
+  mutes only the target main track (harmony and wave-only accompaniment stay audible) so the take
+  is heard right away; adding another take replaces that track's part instead of stacking tracks.
+  The GUI snapshots mute/solo by track name after the save handshake, only on the first audition,
+  so swapping candidates never overwrites it; "Restore Mix" returns to that pre-audition state even
+  if tracks were reordered, and a hand-edited reference part prompts before being replaced. You can
+  copy notes you like from the part:
 
 ```bash
 python scripts/sentence_gacha.py --apply gacha/ --take tifa-03 --base song.ustx -o song.ustx --reference
